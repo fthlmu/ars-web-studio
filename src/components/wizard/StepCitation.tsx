@@ -23,16 +23,6 @@ const FORMATS: { value: CitationFormat; label: string; usedIn: string }[] = [
   { value: 'Vancouver', label: 'Vancouver', usedIn: 'Medicine, Biology, Health Sciences' },
 ]
 
-// Auto-suggest the most likely citation format based on topic keywords
-function suggestFormat(topic: string): CitationFormat | null {
-  const t = topic.toLowerCase()
-  if (t.match(/ieee|circuit|rf|antenna|signal|embedded|fpga|wireless|sensor|power|electrical/)) return 'IEEE'
-  if (t.match(/medic|clinic|health|patient|drug|disease|hospital|nursing/)) return 'Vancouver'
-  if (t.match(/psycholog|social|education|learning|behavior|survey/)) return 'APA7'
-  if (t.match(/histor|literature|art|music|culture|philosophy|humanit/)) return 'Chicago'
-  return null
-}
-
 export function StepCitation({ value, paperType, onChange }: Props) {
   // We pass paperType but use it for potential future warnings; not used yet
   void paperType

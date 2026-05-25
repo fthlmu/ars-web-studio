@@ -12,7 +12,6 @@ interface Props {
   heading: string
   status: StageStatus
   streamingText: string    // live text while generating
-  wordCount?: number       // final word count when done
   error?: string
   onRetry?: () => void
 }
@@ -21,7 +20,6 @@ export function SectionStream({
   heading,
   status,
   streamingText,
-  wordCount,
   error,
   onRetry,
 }: Props) {

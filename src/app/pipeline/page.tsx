@@ -100,53 +100,6 @@ export default function PipelinePage() {
   const paperRef = useRef<PaperState | null>(null)
   const outlineRef = useRef('')
 
-  // ─── Load paper state on mount ─────────────────────────────────────────────
-
-  useEffect(() => {
-    const saved = loadPaper()
-    if (!saved) {
-      router.replace('/intake')
-      return
-    }
-
-    paperRef.current = saved
-    setPaper(saved)
-
-    // If sections already exist (resuming after close), load them
-    if (saved.sections.length > 0) {
-      completedSectionsRef.current = saved.sections.filter(
-        (s) => s.status === 'done' || s.status === 'edited'
-      )
-    }
-
-    if (saved.outline) {
-      setOutlineText(saved.outline)
-      outlineRef.current = saved.outline
-    }
-
-    if (saved.outlineApproved) {
-      setOutlineApproved(true)
-    }
-
-    // Build initial phases from saved state
-    buildPhases(saved)
-
-    // Auto-start generation if not already done
-    if (saved.generationStatus === 'idle' || saved.generationStatus === 'running') {
-      if (!saved.outline) {
-        // Outline not yet generated — start from scratch
-        startOutlineGeneration(saved)
-      } else if (saved.outlineApproved) {
-        // Outline approved but sections not all done — resume section generation
-        const pendingSections = saved.sections.filter((s) => s.status === 'pending')
-        if (pendingSections.length > 0) {
-          runSectionLoop(saved, saved.outline, pendingSections)
-        }
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   // ─── Build pipeline phases from paper state ─────────────────────────────────
 
   function buildPhases(state: PaperState) {
@@ -367,6 +320,63 @@ export default function PipelinePage() {
       updatePhase('done', 'done')
     }
   }
+
+  // ─── Load paper state on mount ─────────────────────────────────────────────
+
+  useEffect(() => {
+    let cancelled = false
+
+    queueMicrotask(() => {
+      if (cancelled) return
+
+      const saved = loadPaper()
+      if (!saved) {
+        router.replace('/intake')
+        return
+      }
+
+      paperRef.current = saved
+      setPaper(saved)
+
+      // If sections already exist (resuming after close), load them
+      if (saved.sections.length > 0) {
+        completedSectionsRef.current = saved.sections.filter(
+          (section) => section.status === 'done' || section.status === 'edited'
+        )
+      }
+
+      if (saved.outline) {
+        setOutlineText(saved.outline)
+        outlineRef.current = saved.outline
+      }
+
+      if (saved.outlineApproved) {
+        setOutlineApproved(true)
+      }
+
+      // Build initial phases from saved state
+      buildPhases(saved)
+
+      // Auto-start generation if not already done
+      if (saved.generationStatus === 'idle' || saved.generationStatus === 'running') {
+        if (!saved.outline) {
+          // Outline not yet generated — start from scratch
+          startOutlineGeneration(saved)
+        } else if (saved.outlineApproved) {
+          // Outline approved but sections not all done — resume section generation
+          const pendingSections = saved.sections.filter((section) => section.status === 'pending')
+          if (pendingSections.length > 0) {
+            runSectionLoop(saved, saved.outline, pendingSections)
+          }
+        }
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // ─── Retry a single failed section ─────────────────────────────────────────
 
