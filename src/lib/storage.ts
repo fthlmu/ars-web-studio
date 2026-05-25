@@ -4,9 +4,10 @@
 // Think of localStorage like non-volatile memory — it survives power cycles (page reloads).
 // The paper state is serialized to JSON and stored under a single key.
 
-import type { PaperState } from './types'
+import type { PaperConfig, PaperState } from './types'
 
 const STORAGE_KEY = 'ars-paper-state'
+const DRAFT_CONFIG_KEY = 'ars-draft-config'
 
 // Save the entire paper state to localStorage.
 export function savePaper(state: PaperState): void {
@@ -35,6 +36,33 @@ export function clearPaper(): void {
     localStorage.removeItem(STORAGE_KEY)
   } catch (e) {
     console.error('Failed to clear paper state:', e)
+  }
+}
+
+// Save only a config as a draft for pre-filling the intake wizard.
+export function saveDraftConfig(config: PaperConfig): void {
+  try {
+    localStorage.setItem(DRAFT_CONFIG_KEY, JSON.stringify(config))
+  } catch (e) {
+    console.error('Failed to save draft config:', e)
+  }
+}
+
+export function loadDraftConfig(): PaperConfig | null {
+  try {
+    const raw = localStorage.getItem(DRAFT_CONFIG_KEY)
+    return raw ? (JSON.parse(raw) as PaperConfig) : null
+  } catch (e) {
+    console.error('Failed to load draft config:', e)
+    return null
+  }
+}
+
+export function clearDraftConfig(): void {
+  try {
+    localStorage.removeItem(DRAFT_CONFIG_KEY)
+  } catch (e) {
+    console.error('Failed to clear draft config:', e)
   }
 }
 

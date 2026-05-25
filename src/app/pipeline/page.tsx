@@ -89,6 +89,7 @@ export default function PipelinePage() {
 
   // Error state per section (keyed by section heading)
   const [sectionErrors, setSectionErrors] = useState<Record<string, string>>({})
+  const [outlineError, setOutlineError] = useState<string | null>(null)
 
   // Generation lock — prevents double-start
   const isRunningRef = useRef(false)
@@ -170,6 +171,7 @@ export default function PipelinePage() {
     isRunningRef.current = true
 
     updatePhase('outline', 'active')
+    setOutlineError(null)
     setStreamingText('')
     setActiveSection('outline')
 
@@ -188,7 +190,9 @@ export default function PipelinePage() {
       updatePhase('outline', 'done')
       updatePhase('approval', 'active')
     } catch (err) {
-      updatePhase('outline', 'error', { error: String(err) })
+      const message = err instanceof Error ? err.message : String(err)
+      setOutlineError(message)
+      updatePhase('outline', 'error', { error: message })
       console.error('Outline generation failed:', err)
     } finally {
       setActiveSection(null)
@@ -465,7 +469,7 @@ export default function PipelinePage() {
 
   return (
     <div className="min-h-screen bg-background">
-      <div className="max-w-3xl mx-auto px-4 py-8 space-y-8">
+      <div className="max-w-3xl mx-auto px-4 py-6 space-y-8 sm:py-8">
 
         {/* Header */}
         <div>
@@ -495,6 +499,23 @@ export default function PipelinePage() {
           </h2>
           <PipelineStepper stages={phases} />
         </div>
+
+        {/* Outline error banner */}
+        {outlineError && !outlineApproved && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 text-sm">
+            <p className="font-medium text-destructive">Outline generation failed</p>
+            <p className="mt-1 text-muted-foreground">{outlineError}</p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-3"
+              onClick={() => startOutlineGeneration(paper)}
+              disabled={activeSection === 'outline'}
+            >
+              Retry outline
+            </Button>
+          </div>
+        )}
 
         {/* Outline box — shown while generating OR waiting for approval */}
         {!outlineApproved && (
@@ -587,7 +608,7 @@ export default function PipelinePage() {
                 words written
               </p>
             </div>
-            <div className="flex gap-3 justify-center">
+            <div className="flex flex-col gap-3 justify-center sm:flex-row">
               <Button variant="outline" onClick={() => router.push('/editor')}>
                 Edit Sections
               </Button>

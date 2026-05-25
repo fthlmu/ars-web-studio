@@ -132,10 +132,10 @@ export default function EditorPage() {
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-screen bg-background overflow-hidden">
+    <div className="flex h-[calc(100vh-57px)] flex-col bg-background overflow-hidden md:flex-row">
 
       {/* ── Left sidebar: section navigation ── */}
-      <aside className="w-64 shrink-0 flex flex-col border-r bg-muted/20 overflow-y-auto">
+      <aside className="flex max-h-64 w-full shrink-0 flex-col border-b bg-muted/20 overflow-y-auto md:max-h-none md:w-64 md:border-b-0 md:border-r">
 
         {/* Sidebar header */}
         <div className="px-4 py-3 border-b">
@@ -160,7 +160,7 @@ export default function EditorPage() {
                 key={section.id}
                 type="button"
                 onClick={() => setActiveId(section.id)}
-                className={`w-full text-left px-4 py-2.5 transition-colors hover:bg-accent/50 ${
+                className={`w-full text-left px-4 py-2 transition-colors hover:bg-accent/50 md:py-2.5 ${
                   isActive ? 'bg-accent border-r-2 border-primary' : ''
                 }`}
               >
@@ -220,7 +220,7 @@ export default function EditorPage() {
 
         {/* Section header */}
         {activeSection && (
-          <div className="px-6 py-3 border-b bg-background shrink-0">
+          <div className="px-4 py-3 border-b bg-background shrink-0 sm:px-6">
             <h2 className="text-lg font-semibold">{activeSection.heading}</h2>
             <p className="text-xs text-muted-foreground">
               {paper.config.citationFormat} · {paper.config.language}

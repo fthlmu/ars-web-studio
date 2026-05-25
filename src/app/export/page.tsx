@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
-import { loadPaper } from '@/lib/storage'
+import { loadPaper, saveDraftConfig } from '@/lib/storage'
 import type { PaperState } from '@/lib/types'
 import { safeFilename, totalWords } from '@/lib/export/content'
 import { buildMarkdown } from '@/lib/export/markdown'
@@ -77,6 +77,12 @@ export default function ExportPage() {
     )
   }, [paper])
 
+  const handleStartFromConfig = useCallback(() => {
+    if (!paper) return
+    saveDraftConfig(paper.config)
+    router.push('/intake')
+  }, [paper, router])
+
   const handlePdf = useCallback(async () => {
     if (!paper || isPdfLoading) return
 
@@ -121,7 +127,7 @@ export default function ExportPage() {
   return (
     <main className="min-h-screen bg-background">
       <div className="mx-auto max-w-4xl px-4 py-8 space-y-6">
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col items-start justify-between gap-4 sm:flex-row">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Phase 6 · Export
@@ -131,9 +137,14 @@ export default function ExportPage() {
               Download your edited paper as Markdown, LaTeX, or a Typst-compiled PDF.
             </p>
           </div>
-          <Button variant="outline" onClick={() => router.push('/editor')}>
-            ← Back to Editor
-          </Button>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button variant="outline" onClick={() => router.push('/editor')}>
+              ← Back to Editor
+            </Button>
+            <Button variant="outline" onClick={handleStartFromConfig}>
+              Start from this paper
+            </Button>
+          </div>
         </div>
 
         <Card>
@@ -237,3 +248,4 @@ export default function ExportPage() {
     </main>
   )
 }
+

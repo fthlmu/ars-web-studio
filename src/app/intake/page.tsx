@@ -3,7 +3,7 @@
 // Intake wizard — orchestrates all 11 steps and produces a PaperConfig saved to localStorage.
 // Think of this like a state machine: currentStep is the state, Next/Back are transitions.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { Progress } from '@/components/ui/progress'
 import { Button } from '@/components/ui/button'
@@ -21,7 +21,7 @@ import { StepStyle } from '@/components/wizard/StepStyle'
 import { StepFunding } from '@/components/wizard/StepFunding'
 import { ConfirmationScreen } from '@/components/wizard/ConfirmationScreen'
 
-import { savePaper, generatePaperId } from '@/lib/storage'
+import { clearDraftConfig, generatePaperId, loadDraftConfig, savePaper } from '@/lib/storage'
 import { PaperConfig, PaperState, Author } from '@/lib/types'
 
 // All form data collected across the 11 steps.
@@ -81,6 +81,30 @@ const STEP_TITLES = [
   'Funding & Disclosures',
 ]
 
+
+function formFromDraftConfig(config: PaperConfig): WizardFormData {
+  return {
+    topic: config.topic,
+    researchQuestion: config.researchQuestion,
+    paperType: config.paperType,
+    targetJournal: config.targetJournal ?? '',
+    citationFormat: config.citationFormat,
+    outputFormats: config.outputFormats.length > 0 ? config.outputFormats : ['markdown', 'latex'],
+    language: config.language,
+    bilingualAbstract: config.bilingualAbstract,
+    wordCount: config.wordCount,
+    existingMaterials: config.existingMaterials,
+    authors: config.authors.length > 0
+      ? config.authors
+      : [{ name: '', affiliation: '', email: '', creditRoles: [], isCorresponding: true }],
+    styleProfile: config.styleProfile ?? '',
+    hasFunding: config.fundingSources.length > 0,
+    fundingSources: config.fundingSources.length > 0 ? config.fundingSources : [''],
+    conflictsOfInterest: 'The authors declare no conflicts of interest.',
+    mode: config.mode,
+  }
+}
+
 // Convert wizard form data into the PaperConfig contract that the pipeline expects
 function buildPaperConfig(data: WizardFormData): PaperConfig {
   // Build funding sources string array from the wizard entries
@@ -111,6 +135,23 @@ export default function IntakePage() {
   const [currentStep, setCurrentStep] = useState(1)
   const [showConfirmation, setShowConfirmation] = useState(false)
   const [form, setForm] = useState<WizardFormData>(INITIAL_FORM)
+
+  useEffect(() => {
+    let cancelled = false
+
+    queueMicrotask(() => {
+      if (cancelled) return
+      const draft = loadDraftConfig()
+      if (draft) {
+        setForm(formFromDraftConfig(draft))
+        clearDraftConfig()
+      }
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   // Generic field updater — works for any top-level field
   const set = <K extends keyof WizardFormData>(field: K, value: WizardFormData[K]) => {
