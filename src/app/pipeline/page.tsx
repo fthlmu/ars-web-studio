@@ -16,9 +16,9 @@ import { Textarea } from '@/components/ui/textarea'
 import { Progress } from '@/components/ui/progress'
 import { PipelineStepper, PipelineStage } from '@/components/pipeline/PipelineStepper'
 import { SectionStream } from '@/components/pipeline/SectionStream'
-import { loadPaper, savePaper } from '@/lib/storage'
+import { loadPaper, savePaper, loadModelConfig } from '@/lib/storage'
 import { generateOutline, generateSection, getSectionWordCount } from '@/lib/ars-client'
-import type { PaperState, Section } from '@/lib/types'
+import type { PaperState, Section, ModelConfig } from '@/lib/types'
 
 // ─── Section heading parser ───────────────────────────────────────────────────
 
@@ -101,6 +101,10 @@ export default function PipelinePage() {
   const paperRef = useRef<PaperState | null>(null)
   const outlineRef = useRef('')
 
+  // Which AI model to use — like picking which instrument takes the measurement.
+  // Loaded once on mount; passed to every generation call so all sections use it.
+  const modelConfigRef = useRef<ModelConfig | undefined>(undefined)
+
   // ─── Build pipeline phases from paper state ─────────────────────────────────
 
   function buildPhases(state: PaperState) {
@@ -180,7 +184,7 @@ export default function PipelinePage() {
       accumulatedOutline = await generateOutline(state.config, (chunk) => {
         accumulatedOutline += chunk
         setStreamingText((prev) => prev + chunk)
-      })
+      }, modelConfigRef.current)
 
       outlineRef.current = accumulatedOutline
       setOutlineText(accumulatedOutline)
@@ -279,7 +283,8 @@ export default function PipelinePage() {
           (chunk) => {
             content += chunk
             setStreamingText((prev) => prev + chunk)
-          }
+          },
+          modelConfigRef.current
         )
 
         const completed: Section = {
@@ -341,6 +346,9 @@ export default function PipelinePage() {
 
       paperRef.current = saved
       setPaper(saved)
+
+      // Read the saved model choice once; falls back to the default model.
+      modelConfigRef.current = loadModelConfig()
 
       // If sections already exist (resuming after close), load them
       if (saved.sections.length > 0) {
@@ -408,7 +416,8 @@ export default function PipelinePage() {
         (chunk) => {
           content += chunk
           setStreamingText((prev) => prev + chunk)
-        }
+        },
+        modelConfigRef.current
       )
 
       const completed: Section = {

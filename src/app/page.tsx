@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { ModelSelector } from '@/components/ModelSelector'
 import { loadPaper, clearPaper } from '@/lib/storage'
 import type { PaperState } from '@/lib/types'
 
@@ -52,6 +53,12 @@ export default function Home() {
                 Continue Previous Paper
               </Link>
             )}
+          </div>
+          {/* Model picker: like choosing which "engine" drives generation —
+              the selected model is saved to localStorage and read by the pipeline. */}
+          <div className="space-y-1.5">
+            <p className="text-xs font-medium text-muted-foreground">Generation model</p>
+            <ModelSelector className="w-full sm:w-80" />
           </div>
         </section>
 

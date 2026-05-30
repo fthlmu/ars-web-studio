@@ -15,7 +15,7 @@ import {
   CITATION_COMPLIANCE_PROMPT,
   ABSTRACT_BILINGUAL_PROMPT,
 } from './ars-agents'
-import type { PaperConfig, Section } from './types'
+import type { PaperConfig, Section, ModelConfig } from './types'
 
 // ─── Core streaming primitive ────────────────────────────────────────────────
 
@@ -25,17 +25,19 @@ import type { PaperConfig, Section } from './types'
  * @param agentPrompt  - The ARS agent's system prompt
  * @param userMessage  - The task/context to send to that agent
  * @param onChunk      - Called with each text chunk as it arrives (for live UI updates)
+ * @param modelConfig  - Which model to route to (Anthropic or an OpenAI-compatible one). Optional — the server defaults to Claude Sonnet 4.5 if omitted.
  * @returns            - The full accumulated response text
  */
 export async function callAgent(
   agentPrompt: string,
   userMessage: string,
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig
 ): Promise<string> {
   const response = await fetch('/api/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ agentPrompt, userMessage }),
+    body: JSON.stringify({ agentPrompt, userMessage, modelConfig }),
   })
 
   if (!response.ok) {
@@ -91,7 +93,8 @@ export async function callAgent(
  */
 export async function generateOutline(
   config: PaperConfig,
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig
 ): Promise<string> {
   const userMessage = `
 You are generating a structured outline for an academic paper. Here is the Paper Configuration Record:
@@ -109,7 +112,7 @@ For each section, specify:
 Follow the paper structure patterns for ${config.paperType} papers.
 `.trim()
 
-  return callAgent(STRUCTURE_ARCHITECT_PROMPT, userMessage, onChunk)
+  return callAgent(STRUCTURE_ARCHITECT_PROMPT, userMessage, onChunk, modelConfig)
 }
 
 // ─── Pipeline stage 2: Generate one section ─────────────────────────────────
@@ -124,7 +127,8 @@ export async function generateSection(
   completedSections: Section[],
   targetSectionHeading: string,
   targetWordCount: number,
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig
 ): Promise<string> {
   // Build context from already-completed sections
   const priorContent =
@@ -161,7 +165,7 @@ Requirements:
 - Output clean markdown (## for section heading, ### for subsections)
 `.trim()
 
-  return callAgent(DRAFT_WRITER_PROMPT, userMessage, onChunk)
+  return callAgent(DRAFT_WRITER_PROMPT, userMessage, onChunk, modelConfig)
 }
 
 // ─── Pipeline stage 3: Citation check ────────────────────────────────────────
@@ -173,7 +177,8 @@ Requirements:
 export async function checkCitations(
   config: PaperConfig,
   fullPaperText: string,
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig
 ): Promise<string> {
   const userMessage = `
 Perform a citation compliance check on the following academic paper draft.
@@ -193,7 +198,7 @@ Check for:
 Output a Citation Audit Report, then the corrected reference list.
 `.trim()
 
-  return callAgent(CITATION_COMPLIANCE_PROMPT, userMessage, onChunk)
+  return callAgent(CITATION_COMPLIANCE_PROMPT, userMessage, onChunk, modelConfig)
 }
 
 // ─── Pipeline stage 4: Bilingual abstract ────────────────────────────────────
@@ -205,7 +210,8 @@ Output a Citation Audit Report, then the corrected reference list.
 export async function generateAbstract(
   config: PaperConfig,
   completedSections: Section[],
-  onChunk: (text: string) => void
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig
 ): Promise<string> {
   const fullText = completedSections
     .map((s) => `## ${s.heading}\n\n${stripHtml(s.content)}`)
@@ -231,7 +237,7 @@ Write:
 4. Abstract Quality Report table
 `.trim()
 
-  return callAgent(ABSTRACT_BILINGUAL_PROMPT, userMessage, onChunk)
+  return callAgent(ABSTRACT_BILINGUAL_PROMPT, userMessage, onChunk, modelConfig)
 }
 
 // ─── Helper: estimate word count per section ─────────────────────────────────
