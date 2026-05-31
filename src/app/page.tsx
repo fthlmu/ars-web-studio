@@ -43,7 +43,13 @@ export default function Home() {
               onClick={() => clearPaper()}
               className="inline-flex h-11 items-center justify-center rounded-md bg-primary px-8 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
             >
-              Start New Paper
+              Full Paper Pipeline
+            </Link>
+            <Link
+              href="/tools"
+              className="inline-flex h-11 items-center justify-center rounded-md border bg-background px-8 text-sm font-medium transition-colors hover:bg-accent hover:text-accent-foreground"
+            >
+              Quick Tools
             </Link>
             {paper && (
               <Link
