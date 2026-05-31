@@ -5,7 +5,7 @@
 // which "generator" (Claude, or a local model) the pipeline will drive. The choice
 // is written to localStorage so the next pipeline run reads it on mount.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Select,
   SelectContent,
@@ -17,15 +17,41 @@ import { DEFAULT_MODELS } from '@/lib/types'
 import type { ModelConfig } from '@/lib/types'
 import { loadModelConfig, saveModelConfig } from '@/lib/storage'
 
-export function ModelSelector({ className }: { className?: string }) {
+export function ModelSelector({
+  className,
+  onChange,
+}: {
+  className?: string
+  onChange?: (config: ModelConfig) => void
+}) {
   // Track the full current config (not just the label) so a CUSTOM model — one saved
   // on the Settings page that is NOT in DEFAULT_MODELS — stays selected instead of
   // silently snapping back to the default.
   const [current, setCurrent] = useState<ModelConfig>(DEFAULT_MODELS[0])
+  const [mounted, setMounted] = useState(false)
+  const onChangeRef = useRef(onChange)
+
+  useEffect(() => {
+    onChangeRef.current = onChange
+  }, [onChange])
 
   // Read the saved choice after mount (localStorage is browser-only).
+  // The mounted flag prevents a React 19 hydration mismatch between SSR
+  // (always DEFAULT_MODELS[0]) and the client's stored value.
   useEffect(() => {
-    queueMicrotask(() => setCurrent(loadModelConfig()))
+    let cancelled = false
+
+    queueMicrotask(() => {
+      if (cancelled) return
+      const saved = loadModelConfig()
+      setCurrent(saved)
+      onChangeRef.current?.(saved)
+      setMounted(true)
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   // Dropdown options = the presets, plus the current selection when it is a custom
@@ -39,10 +65,11 @@ export function ModelSelector({ className }: { className?: string }) {
     if (!chosen) return
     saveModelConfig(chosen)
     setCurrent(chosen)
+    onChange?.(chosen)
   }
 
   return (
-    <Select value={current.label} onValueChange={handleChange}>
+    <Select value={mounted ? current.label : DEFAULT_MODELS[0].label} onValueChange={handleChange}>
       <SelectTrigger className={className}>
         <SelectValue placeholder="Select model" />
       </SelectTrigger>

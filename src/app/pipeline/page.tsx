@@ -113,7 +113,14 @@ export default function PipelinePage() {
       {
         id:     'outline',
         label:  'Generating Outline',
-        status: state.outline ? 'done' : 'pending',
+        status: state.outline
+          ? 'done'
+          : state.generationStatus === 'error'
+            ? 'error'
+            : 'pending',
+        error: state.generationStatus === 'error' && !state.outline
+          ? 'Outline generation failed'
+          : undefined,
       },
       {
         id:     'approval',
@@ -174,6 +181,7 @@ export default function PipelinePage() {
     if (isRunningRef.current) return
     isRunningRef.current = true
 
+    persist((prev) => ({ ...prev, generationStatus: 'running' }))
     updatePhase('outline', 'active')
     setOutlineError(null)
     setStreamingText('')
@@ -195,6 +203,7 @@ export default function PipelinePage() {
       updatePhase('approval', 'active')
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      persist((prev) => ({ ...prev, generationStatus: 'error' }))
       setOutlineError(message)
       updatePhase('outline', 'error', { error: message })
       console.error('Outline generation failed:', err)
@@ -333,49 +342,52 @@ export default function PipelinePage() {
   // ─── Load paper state on mount ─────────────────────────────────────────────
 
   useEffect(() => {
-    let cancelled = false
+    // paperRef is set below before any async work starts. Strict Mode runs this effect twice
+    // in development — the second run sees paperRef.current !== null and exits immediately,
+    // preventing double-init and double generation. On actual navigation (real unmount/remount)
+    // paperRef resets to null, so init runs correctly for the new visit.
+    if (paperRef.current !== null) return
+
+    const saved = loadPaper()
+    if (!saved) {
+      router.replace('/intake')
+      return
+    }
+
+    paperRef.current = saved
+    modelConfigRef.current = loadModelConfig()
+
+    if (saved.sections.length > 0) {
+      completedSectionsRef.current = saved.sections.filter(
+        (section) => section.status === 'done' || section.status === 'edited'
+      )
+    }
+
+    if (saved.outline) {
+      outlineRef.current = saved.outline
+    }
 
     queueMicrotask(() => {
-      if (cancelled) return
-
-      const saved = loadPaper()
-      if (!saved) {
-        router.replace('/intake')
-        return
-      }
-
-      paperRef.current = saved
       setPaper(saved)
-
-      // Read the saved model choice once; falls back to the default model.
-      modelConfigRef.current = loadModelConfig()
-
-      // If sections already exist (resuming after close), load them
-      if (saved.sections.length > 0) {
-        completedSectionsRef.current = saved.sections.filter(
-          (section) => section.status === 'done' || section.status === 'edited'
-        )
-      }
 
       if (saved.outline) {
         setOutlineText(saved.outline)
-        outlineRef.current = saved.outline
       }
 
       if (saved.outlineApproved) {
         setOutlineApproved(true)
       }
 
-      // Build initial phases from saved state
+      if (saved.generationStatus === 'error' && !saved.outline) {
+        setOutlineError('Outline generation failed. Click Retry outline to try again.')
+      }
+
       buildPhases(saved)
 
-      // Auto-start generation if not already done
       if (saved.generationStatus === 'idle' || saved.generationStatus === 'running') {
         if (!saved.outline) {
-          // Outline not yet generated — start from scratch
           startOutlineGeneration(saved)
         } else if (saved.outlineApproved) {
-          // Outline approved but sections not all done — resume section generation
           const pendingSections = saved.sections.filter((section) => section.status === 'pending')
           if (pendingSections.length > 0) {
             runSectionLoop(saved, saved.outline, pendingSections)
@@ -383,10 +395,6 @@ export default function PipelinePage() {
         }
       }
     })
-
-    return () => {
-      cancelled = true
-    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

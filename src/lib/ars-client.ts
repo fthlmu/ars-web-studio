@@ -69,15 +69,16 @@ export async function callAgent(
       const payload = line.slice(6).trim()
       if (payload === '[DONE]') break
 
+      let parsed: { text?: string; error?: string }
       try {
-        const parsed = JSON.parse(payload) as { text?: string; error?: string }
-        if (parsed.error) throw new Error(parsed.error)
-        if (parsed.text) {
-          fullText += parsed.text
-          onChunk(parsed.text)
-        }
+        parsed = JSON.parse(payload)
       } catch {
-        // Ignore malformed SSE lines
+        continue // skip truly malformed JSON frames
+      }
+      if (parsed.error) throw new Error(parsed.error)
+      if (parsed.text) {
+        fullText += parsed.text
+        onChunk(parsed.text)
       }
     }
   }

@@ -65,7 +65,7 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ModelSelector className="w-full" />
+          <ModelSelector className="w-full" onChange={setCurrent} />
         </CardContent>
       </Card>
 
