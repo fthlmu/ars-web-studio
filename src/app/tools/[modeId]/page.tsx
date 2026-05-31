@@ -1,16 +1,27 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
 import { getMode } from '@/lib/tools/registry'
+import type { IntakeType } from '@/lib/tools/registry'
 import { runToolMode } from '@/lib/tools/run'
-import { ToolNotReadyError, MissingInputError } from '@/lib/tools/prompt-builder'
+import { ToolNotReadyError, MissingInputError, isApiMode } from '@/lib/tools/prompt-builder'
 import type { ToolInputs } from '@/lib/tools/prompt-builder'
 import { loadModelConfig } from '@/lib/storage'
 import { safeFilename } from '@/lib/export/content'
+import {
+  saveImportedPaper,
+  loadImportedPaper,
+  saveReviewerComments,
+  loadReviewerComments,
+} from '@/lib/tools/imported-paper'
+import { PaperInput } from '@/components/tools/PaperInput'
+import { CommentsInput } from '@/components/tools/CommentsInput'
+import { TopicInput } from '@/components/tools/TopicInput'
 
 type RunStatus = 'idle' | 'active' | 'done' | 'error'
 
@@ -19,12 +30,40 @@ export default function ToolRunnerPage() {
   const router = useRouter()
   const mode = getMode(modeId)
 
-  const [inputs, setInputs] = useState<ToolInputs>({ topic: '' })
+  // Lazy initializer: read localStorage once on first render (client only).
+  // typeof-window guard ensures the server render returns {} without errors.
+  const [inputs, setInputs] = useState<ToolInputs>(() => {
+    if (typeof window === 'undefined') return {}
+    const paper = loadImportedPaper()
+    const comments = loadReviewerComments()
+    return {
+      ...(paper !== null ? { paperText: paper } : {}),
+      ...(comments !== null ? { comments } : {}),
+    }
+  })
   const [streamingText, setStreamingText] = useState('')
   const [status, setStatus] = useState<RunStatus>('idle')
   const [error, setError] = useState<string | null>(null)
   const fullTextRef = useRef('')
   const isRunningRef = useRef(false)
+
+  // Derive whether all required inputs are present — gates the Run button
+  const readyToRun = useMemo(() => {
+    if (!mode || !isApiMode(mode)) return false
+    for (const type of mode.intake) {
+      switch (type) {
+        case 'topic':     if (!inputs.topic?.trim())      return false; break
+        case 'byo-paper': if (!inputs.paperText?.trim())  return false; break
+        case 'comments':  if (!inputs.comments?.trim())   return false; break
+        case 'claims':    if (!inputs.claims?.trim())     return false; break
+        case 'config':    if (!inputs.config)             return false; break
+      }
+    }
+    for (const field of mode.optionFields ?? []) {
+      if (field.required && !inputs.options?.[field.key]?.trim()) return false
+    }
+    return true
+  }, [mode, inputs])
 
   // Unknown mode
   if (!mode) {
@@ -154,28 +193,43 @@ export default function ToolRunnerPage() {
         </div>
       )}
 
-      {/* Input — QT0 ships a single topic textarea.
-          QT1 replaces this block with PaperInput / CommentsInput / TopicInput
-          driven by mode.intake[]. */}
-      <div className="space-y-2">
-        <label htmlFor="topic-input" className="text-sm font-medium">
-          Topic / prompt
-        </label>
-        <Textarea
-          id="topic-input"
-          value={inputs.topic ?? ''}
-          onChange={(e) => setInputs((prev) => ({ ...prev, topic: e.target.value }))}
-          placeholder="Describe what you want to generate…"
-          rows={4}
-          className="resize-none"
-          disabled={status === 'active'}
-        />
+      {/* Intake inputs — driven by mode.intake[] (QT1) */}
+      <div className="space-y-5">
+        {mode.intake.map((type) => renderIntake(type, inputs, setInputs, status === 'active'))}
+
+        {/* Option fields (venue, target format, gold set, …) */}
+        {mode.optionFields && mode.optionFields.length > 0 && (
+          <div className="space-y-3">
+            {mode.optionFields.map((field) => (
+              <div key={field.key} className="space-y-1.5">
+                <Label htmlFor={`opt-${field.key}`} className="text-sm font-medium">
+                  {field.label}
+                  {field.required && (
+                    <span className="ml-1 text-destructive" aria-label="required">*</span>
+                  )}
+                </Label>
+                <Input
+                  id={`opt-${field.key}`}
+                  value={inputs.options?.[field.key] ?? ''}
+                  onChange={(e) =>
+                    setInputs((prev) => ({
+                      ...prev,
+                      options: { ...prev.options, [field.key]: e.target.value },
+                    }))
+                  }
+                  placeholder={field.placeholder}
+                  disabled={status === 'active'}
+                />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Run button */}
       <Button
         onClick={handleRun}
-        disabled={status === 'active' || !inputs.topic?.trim()}
+        disabled={status === 'active' || !readyToRun}
         className="w-full sm:w-auto"
       >
         {status === 'active' ? 'Generating…' : 'Run →'}
@@ -235,4 +289,65 @@ function BackLink() {
       ← Quick Tools
     </Link>
   )
+}
+
+// Maps each intake type to the right controlled input component.
+// Called per-type from mode.intake[] in the runner — one component per slot.
+function renderIntake(
+  type: IntakeType,
+  inputs: ToolInputs,
+  setInputs: React.Dispatch<React.SetStateAction<ToolInputs>>,
+  disabled: boolean,
+) {
+  switch (type) {
+    case 'topic':
+      return (
+        <TopicInput
+          key="topic"
+          value={inputs.topic ?? ''}
+          onChange={(text) => setInputs((prev) => ({ ...prev, topic: text }))}
+          disabled={disabled}
+        />
+      )
+    case 'byo-paper':
+      return (
+        <PaperInput
+          key="byo-paper"
+          value={inputs.paperText ?? ''}
+          onChange={(text) => {
+            saveImportedPaper(text)
+            setInputs((prev) => ({ ...prev, paperText: text }))
+          }}
+          disabled={disabled}
+        />
+      )
+    case 'comments':
+      return (
+        <CommentsInput
+          key="comments"
+          value={inputs.comments ?? ''}
+          onChange={(text) => {
+            saveReviewerComments(text)
+            setInputs((prev) => ({ ...prev, comments: text }))
+          }}
+          disabled={disabled}
+        />
+      )
+    case 'claims':
+      return (
+        <CommentsInput
+          key="claims"
+          label="Claims to Verify"
+          placeholder="Paste the claims you want to fact-check, one per line…"
+          id="claims-input"
+          value={inputs.claims ?? ''}
+          onChange={(text) => setInputs((prev) => ({ ...prev, claims: text }))}
+          disabled={disabled}
+        />
+      )
+    case 'config':
+      // config-intake modes are all launchers — the launcher branch handles them
+      // before we reach this code. Return null as a safety fallback.
+      return null
+  }
 }
