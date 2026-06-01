@@ -20,6 +20,13 @@ import {
   DRAFT_WRITER_PROMPT,
   CITATION_COMPLIANCE_PROMPT,
   ABSTRACT_BILINGUAL_PROMPT,
+  REVISION_COACH_PROMPT,
+  ACADEMIC_PAPER_SKILL_PROMPT,
+  DEEP_RESEARCH_SKILL_PROMPT,
+  REVIEWER_SKILL_PROMPT,
+  PEER_REVIEWER_PROMPT,
+  SOURCE_VERIFICATION_PROMPT,
+  SYNTHESIS_AGENT_PROMPT,
 } from '@/lib/ars-agents'
 import type { PaperConfig } from '@/lib/types'
 import type {
@@ -55,16 +62,24 @@ const ARS_AGENT_PROMPTS: Partial<Record<BundledAgentRef, string>> = {
   draft_writer: DRAFT_WRITER_PROMPT,
   citation_compliance: CITATION_COMPLIANCE_PROMPT,
   abstract_bilingual: ABSTRACT_BILINGUAL_PROMPT,
-  // QT3: disclosure   ·  QT4: peer_reviewer  ·  QT5: revision_coach
-  // QT6: source_verification, synthesis_agent
-  //   → add each here as `scripts/bundle-agents.mjs` bundles it.
+  // Bundled in QT5:
+  revision_coach: REVISION_COACH_PROMPT,
+  // Bundled in QT4 (peer review #18; shared with pipeline P11):
+  peer_reviewer: PEER_REVIEWER_PROMPT,
+  // Bundled in QT6 (fact-check #5 + P9 pre-pay; shared with pipeline P9):
+  source_verification: SOURCE_VERIFICATION_PROMPT,
+  synthesis_agent: SYNTHESIS_AGENT_PROMPT,
+  // Note: 'disclosure' is NOT a standalone ARS agent — it is a MODE of the
+  // academic-paper skill, so paper-disclosure (#17) is wired via ARS_SKILL_PROMPTS.
 }
 
 const ARS_SKILL_PROMPTS: Partial<Record<SkillRef, string>> = {
-  // None bundled in QT0. Filled by later phases:
-  //   QT3: 'academic-paper'           (academic-paper/SKILL.md)
-  //   QT4: 'academic-paper-reviewer'  (academic-paper-reviewer/SKILL.md)
-  //   QT6: 'deep-research'            (deep-research/SKILL.md)
+  // Each family SKILL.md, bundled as a local constant. The runner prepends a
+  // `MODE: <promptModeKey>` line (buildUserMessage) so one SKILL serves all its
+  // modes. Wired across QT3/QT4/QT6 and reused by QT7's interactive runner.
+  'academic-paper': ACADEMIC_PAPER_SKILL_PROMPT,           // QT3  (#9 plan, #14 lit-review)
+  'academic-paper-reviewer': REVIEWER_SKILL_PROMPT,        // QT4  (#19/#20/#21/#22/#23)
+  'deep-research': DEEP_RESEARCH_SKILL_PROMPT,             // QT6  (#2/#3/#4/#6/#7)
 }
 
 // ─── A typed "not built yet" error the runner + UI can recognize ─────────────

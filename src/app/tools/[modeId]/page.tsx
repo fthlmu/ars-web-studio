@@ -14,6 +14,12 @@ import type { ToolInputs } from '@/lib/tools/prompt-builder'
 import { loadModelConfig } from '@/lib/storage'
 import { safeFilename } from '@/lib/export/content'
 import {
+  convertTextSync,
+  rawTextToPaperState,
+  formatToExtension,
+  formatMimeType,
+} from '@/lib/export/format-convert'
+import {
   saveImportedPaper,
   loadImportedPaper,
   saveReviewerComments,
@@ -22,6 +28,7 @@ import {
 import { PaperInput } from '@/components/tools/PaperInput'
 import { CommentsInput } from '@/components/tools/CommentsInput'
 import { TopicInput } from '@/components/tools/TopicInput'
+import { InteractiveRunner } from '@/components/tools/InteractiveRunner'
 
 type RunStatus = 'idle' | 'active' | 'done' | 'error'
 
@@ -64,6 +71,64 @@ export default function ToolRunnerPage() {
     }
     return true
   }, [mode, inputs])
+
+  // ── Format-convert handler (export-helper mode, QT2) ──────────────────────
+  // Defined before early returns so it is in scope for the export-helper branch.
+
+  async function handleConvert() {
+    if (!inputs.paperText?.trim()) return
+    setStatus('active')
+    setError(null)
+    fullTextRef.current = ''
+
+    const rawFormat = inputs.options?.targetFormat ?? ''
+    const ext = formatToExtension(rawFormat)
+
+    try {
+      if (ext === 'pdf') {
+        const paper = rawTextToPaperState(inputs.paperText)
+        const res = await fetch('/api/export-pdf', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ paper }),
+        })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({ error: res.statusText }))
+          throw new Error(`PDF export failed: ${(data as { error?: string }).error ?? res.statusText}`)
+        }
+        const blob = await res.blob()
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = 'converted.pdf'
+        a.click()
+        URL.revokeObjectURL(url)
+        fullTextRef.current = '[PDF downloaded successfully]'
+        setStreamingText('[PDF downloaded successfully]')
+      } else {
+        const converted = convertTextSync(inputs.paperText, rawFormat)
+        fullTextRef.current = converted ?? ''
+        setStreamingText(fullTextRef.current)
+      }
+      setStatus('done')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      setStatus('error')
+    }
+  }
+
+  function handleDownloadConvert() {
+    const rawFormat = inputs.options?.targetFormat ?? 'markdown'
+    const ext = formatToExtension(rawFormat)
+    const mimeType = formatMimeType(ext)
+    const blob = new Blob([fullTextRef.current], { type: mimeType })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = safeFilename('converted', ext)
+    a.click()
+    URL.revokeObjectURL(url)
+  }
 
   // Unknown mode
   if (!mode) {
@@ -108,20 +173,134 @@ export default function ToolRunnerPage() {
     )
   }
 
-  // ── Export-helper (format-convert) — wired in QT2 ────────────────────────
-  if (mode.promptSource.kind === 'export-helper') {
+  // ── Interactive (multi-turn chat) — QT7 ──────────────────────────────────
+  // Modes #4 research-socratic, #9 paper-plan, #20 review-guided are a dialogue,
+  // not a one-shot. Isolate them onto the chat runner BEFORE the single-shot path.
+  // (isApiMode guards out launchers/export-helpers, which never reach here anyway.)
+  if (mode.delivery === 'interactive' && isApiMode(mode)) {
     return (
-      <div className="mx-auto max-w-2xl px-4 py-12 space-y-6">
+      <div className="mx-auto max-w-2xl px-4 py-8 space-y-6">
         <BackLink />
-        <div className="space-y-2">
+        <div className="space-y-1">
           <h1 className="text-2xl font-bold">{mode.label}</h1>
-          <p className="text-muted-foreground">{mode.examplePrompt}</p>
+          <p className="text-sm text-muted-foreground">{mode.examplePrompt}</p>
+          {mode.approximation && (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              Lightweight approximation — not the verified P9 research corpus.
+            </p>
+          )}
         </div>
-        <div className="rounded-lg border bg-muted/20 p-5">
-          <p className="text-sm text-muted-foreground">
-            This tool uses the local export engine (no AI call) — it ships in QT2.
+        <InteractiveRunner mode={mode} />
+      </div>
+    )
+  }
+
+  // ── Export-helper (format-convert) — QT2 ────────────────────────────────
+  if (mode.promptSource.kind === 'export-helper') {
+    const targetFormat = inputs.options?.targetFormat ?? ''
+    const hasPaper = !!inputs.paperText?.trim()
+    const hasFormat = !!targetFormat.trim()
+    const readyToConvert = hasPaper && hasFormat
+    const isPdf = formatToExtension(targetFormat) === 'pdf'
+    const pdfDownloaded = streamingText === '[PDF downloaded successfully]'
+
+    return (
+      <div className="mx-auto max-w-2xl px-4 py-8 space-y-6">
+        <BackLink />
+
+        <div className="space-y-1">
+          <h1 className="text-2xl font-bold">{mode.label}</h1>
+          <p className="text-sm text-muted-foreground">{mode.examplePrompt}</p>
+          <p className="text-xs text-muted-foreground">
+            Client-side conversion — no AI call. Markdown and LaTeX are instant; PDF uses Typst (requires the server).
           </p>
         </div>
+
+        {/* Inputs */}
+        <div className="space-y-5">
+          {mode.intake.map((type) => renderIntake(type, inputs, setInputs, status === 'active'))}
+
+          {/* Target format option field */}
+          {mode.optionFields?.map((field) => (
+            <div key={field.key} className="space-y-1.5">
+              <Label htmlFor={`opt-${field.key}`} className="text-sm font-medium">
+                {field.label}
+                {field.required && (
+                  <span className="ml-1 text-destructive" aria-label="required">*</span>
+                )}
+              </Label>
+              <Input
+                id={`opt-${field.key}`}
+                value={inputs.options?.[field.key] ?? ''}
+                onChange={(e) =>
+                  setInputs((prev) => ({
+                    ...prev,
+                    options: { ...prev.options, [field.key]: e.target.value },
+                  }))
+                }
+                placeholder={field.placeholder}
+                disabled={status === 'active'}
+              />
+            </div>
+          ))}
+        </div>
+
+        {/* Convert button */}
+        <Button
+          onClick={handleConvert}
+          disabled={status === 'active' || !readyToConvert}
+          className="w-full sm:w-auto"
+        >
+          {status === 'active' ? 'Converting…' : 'Convert →'}
+        </Button>
+
+        {/* Result: markdown / latex preview */}
+        {status === 'done' && !isPdf && !pdfDownloaded && (
+          <div className="rounded-lg border bg-muted/20 overflow-hidden">
+            <div className="flex items-center justify-between px-4 py-2 border-b bg-muted/30">
+              <span className="text-sm font-semibold">Converted output</span>
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => navigator.clipboard.writeText(fullTextRef.current)}
+                >
+                  Copy
+                </Button>
+                <Button size="sm" variant="outline" onClick={handleDownloadConvert}>
+                  Download
+                </Button>
+              </div>
+            </div>
+            <div className="px-4 py-3">
+              <pre
+                aria-live="polite"
+                aria-label="Converted output"
+                className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed max-h-[60vh] overflow-y-auto font-mono"
+              >
+                {streamingText}
+              </pre>
+            </div>
+          </div>
+        )}
+
+        {/* Result: PDF downloaded */}
+        {status === 'done' && pdfDownloaded && (
+          <p className="text-sm text-muted-foreground">
+            PDF downloaded to your device.
+          </p>
+        )}
+
+        {/* Error */}
+        {status === 'error' && error && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 p-4 space-y-3">
+            <p className="text-sm font-medium text-destructive">Conversion failed</p>
+            <p className="text-sm text-muted-foreground">{error}</p>
+            <Button size="sm" variant="outline" onClick={() => setStatus('idle')}>
+              Try again
+            </Button>
+          </div>
+        )}
       </div>
     )
   }
