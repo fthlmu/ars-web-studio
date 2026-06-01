@@ -1,8 +1,9 @@
 // Bundles ARS agent markdown files into TypeScript string constants.
 // Run: node scripts/bundle-agents.mjs
 // Safe to re-run — regenerates from the _*.md source files.
+// Optional per-agent field: subdir — places md/ts in DEST/<subdir>/ instead of DEST/.
 
-import { readFileSync, writeFileSync } from 'fs'
+import { readFileSync, writeFileSync, mkdirSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
 
@@ -76,11 +77,38 @@ const agents = [
     name: 'SYNTHESIS_AGENT_PROMPT',
     desc: 'Cross-source synthesis / contradiction resolution (bundled for QT6; shared with pipeline P9)',
   },
+  // ── P9 Stage 1: deep-research agents (live in deep-research/ subdir) ──
+  {
+    md:     '_rq_formulator.md',
+    ts:     'rq_formulator.ts',
+    name:   'RQ_FORMULATOR_PROMPT',
+    subdir: 'deep-research',
+    desc:   'deep-research RQ formulator (FINER research-question brief; P9 Stage 1)',
+  },
+  {
+    md:     '_literature_searcher.md',
+    ts:     'literature_searcher.ts',
+    name:   'LITERATURE_SEARCHER_PROMPT',
+    subdir: 'deep-research',
+    desc:   'deep-research literature searcher / bibliography builder (P9 Stage 1)',
+  },
+  {
+    md:     '_methodology_selector.md',
+    ts:     'methodology_selector.ts',
+    name:   'METHODOLOGY_SELECTOR_PROMPT',
+    subdir: 'deep-research',
+    desc:   'deep-research methodology blueprint selector (P9 Stage 1)',
+  },
 ]
 
 for (const agent of agents) {
-  const mdPath = join(DEST, agent.md)
-  const tsPath = join(DEST, agent.ts)
+  // Resolve paths — use subdir if provided, otherwise place directly in DEST
+  const dir    = agent.subdir ? join(DEST, agent.subdir) : DEST
+  const mdPath = join(dir, agent.md)
+  const tsPath = join(dir, agent.ts)
+
+  // Ensure the target directory exists (no-op if already there)
+  mkdirSync(dir, { recursive: true })
 
   let raw
   try {

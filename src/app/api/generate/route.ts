@@ -18,6 +18,21 @@ interface GenerateRequest {
   userMessage: string         // the user message / task for that agent
   modelConfig?: ModelConfig   // optional: which provider + model to use; defaults to Claude Sonnet 4.5
   maxTokens?: number          // optional token limit; defaults to 8096
+  // optional: research-stage progress info ("Agent N of 5"). When present and well-formed,
+  // we echo it back once as a 'progress' SSE frame so the client can show step status.
+  progressMeta?: { agentName: string; completed: number; total: number }
+}
+
+// Type guard: is this value a well-formed progressMeta object?
+// Like a parity check on an incoming packet — if any field is the wrong type, reject it.
+function isValidProgressMeta(value: unknown): value is { agentName: string; completed: number; total: number } {
+  if (typeof value !== 'object' || value === null) return false
+  const v = value as Record<string, unknown>
+  return (
+    typeof v.agentName === 'string' &&
+    typeof v.completed === 'number' &&
+    typeof v.total === 'number'
+  )
 }
 
 const DEFAULT_MODEL_CONFIG: ModelConfig = {
@@ -114,6 +129,12 @@ export async function POST(req: NextRequest) {
       async start(controller) {
         const send = (payload: object) => {
           controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`))
+        }
+
+        // IR-04: before any provider work, echo the research-stage progress once so the
+        // client can render "Agent N of 5". Malformed progressMeta is silently ignored.
+        if (isValidProgressMeta(body.progressMeta)) {
+          send({ progress: body.progressMeta })
         }
 
         try {
