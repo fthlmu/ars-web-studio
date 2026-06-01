@@ -12,7 +12,9 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",
     "@base-ui/react": "^1.5.0",
+    "@tiptap/core": "3.23.6",
     "@tiptap/extension-mathematics": "^3.23.6",
+    "@tiptap/pm": "3.23.6",
     "@tiptap/react": "^3.23.6",
     "@tiptap/starter-kit": "^3.23.6",
     "class-variance-authority": "^0.7.1",

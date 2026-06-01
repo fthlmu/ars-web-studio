@@ -99,6 +99,13 @@ const agents = [
     subdir: 'deep-research',
     desc:   'deep-research methodology blueprint selector (P9 Stage 1)',
   },
+  // ── P10 Stage 2.5: integrity verification gatekeeper (reused at Stage 4.5 in P15) ──
+  {
+    md:   '_integrity_verification_agent.md',
+    ts:   'integrity_verification.ts',
+    name: 'INTEGRITY_VERIFICATION_PROMPT',
+    desc: '7-mode (M1-M7) academic integrity verification gatekeeper (pipeline Stage 2.5 + 4.5; P10/P15)',
+  },
 ]
 
 for (const agent of agents) {

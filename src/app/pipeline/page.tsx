@@ -16,6 +16,7 @@ import { Textarea } from '@/components/ui/textarea'
 import { Progress } from '@/components/ui/progress'
 import { PipelineStepper, PipelineStage } from '@/components/pipeline/PipelineStepper'
 import { SectionStream } from '@/components/pipeline/SectionStream'
+import { SectionReviewGate } from '@/components/pipeline/SectionReviewGate'
 import { loadPaper, savePaper, loadModelConfig } from '@/lib/storage'
 import { generateOutline, generateSection, getSectionWordCount } from '@/lib/ars-client'
 import type { PaperState, Section, ModelConfig } from '@/lib/types'
@@ -634,6 +635,29 @@ export default function PipelinePage() {
               </Button>
             </div>
           </div>
+        )}
+
+        {/* P10 — Stage 2 draft review gate. Shown alongside the Edit/Export
+            controls once every section is drafted. Approving the draft freezes
+            the sections and hands off to the Integrity Gate (Stage 2.5). The
+            Edit/Export buttons above stay available — this is additive. */}
+        {isDone && (
+          <SectionReviewGate
+            paper={paper}
+            onApproveDraft={() => {
+              // Mark the integrity run as started so the gate page (which reads
+              // this from localStorage on mount) knows to kick off the check.
+              persist((prev) => ({ ...prev, integrityStatus: 'running' }))
+              router.push('/pipeline/integrity')
+            }}
+            onRegenerate={(id) => {
+              // SectionReviewGate hands us a sectionId; retrySection wants the
+              // full Section object, so look it up. Reuses the page's existing
+              // single-section retry path (same as the failed-section flow).
+              const target = paper.sections.find((s) => s.id === id)
+              if (target) retrySection(target)
+            }}
+          />
         )}
 
       </div>

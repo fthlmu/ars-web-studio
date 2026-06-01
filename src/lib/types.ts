@@ -61,6 +61,15 @@ export interface PaperState {
   researchApproved?: boolean         // true once the user clicks "Approve Research"
   researchHash?: string              // fingerprint of the inputs that produced this research (FR-04 skip)
   researchStatus?: 'idle' | 'running' | 'awaiting-approval' | 'approved' | 'error'
+
+  // ── P10: Stage 2.5 (Integrity Gate) results ──
+  // Same DR-01 back-compat rule as the P9 block above: ALL optional, so a paper
+  // saved under P0–P9 (which never ran the integrity gate) still loads cleanly —
+  // an old save just has none of these and the app treats integrity as "not run yet".
+  integrityReports?: IntegrityReport[]   // every integrity run (Stage 2.5 now, 4.5 in P15); newest pushed last
+  integrityPassDate?: string | null      // ISO time the user PASSED the gate (null/absent = never passed)
+  complianceHistory?: ComplianceEntry[]  // append-only audit trail (Stage 6 record); never rewritten
+  integrityStatus?: 'idle' | 'running' | 'awaiting-review' | 'passed' | 'failed' | 'error'
 }
 
 // ── P8: Multi-model adapter ──
@@ -166,3 +175,70 @@ export interface ResearchProgress { agentName: string; completed: number; total:
 
 // The three Stage-1 artifacts bundled together — the full output of runResearch().
 export interface ResearchResult { rqBrief: RQBrief; bibliography: Bibliography; synthesis: SynthesisReport }
+
+// ── P10: Stage 2.5 (Integrity Gate) handoff schema types ──
+// The integrity_verification agent inspects the draft for the 7 AI-research
+// failure modes (Lu et al. 2026) and hands back a Schema-5 JSON block. Think of
+// this like a test-fixture report: 7 channels (M1..M7), each with a pass/fail
+// reading and the probe used to measure it. The agent's own verdict is ADVISORY —
+// the binding decision is recomputed by deriveGateDecision() in integrity.ts.
+
+// The 7 failure-mode ids, in canonical order. M1..M7 — see concept-ars-failure-modes.
+export type FailureModeId = 'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'M6' | 'M7'
+
+// The reading for one failure mode:
+//   CLEAR                 — checked and no sign of the failure
+//   SUSPECTED             — evidence the failure is present (always blocks)
+//   INSUFFICIENT_EVIDENCE — could not be verified (e.g. no run logs supplied).
+//     For hard-block modes this blocks; for soft modes it allows a bounded override.
+export type ModeVerdict = 'CLEAR' | 'SUSPECTED' | 'INSUFFICIENT_EVIDENCE'
+
+// One mode's full result row, as rendered in the 7-row integrity table.
+export interface FailureModeResult {
+  modeId: FailureModeId
+  modeName: string            // e.g. "Hallucinated citation"
+  verdict: ModeVerdict
+  detectionQuestion: string   // the question the agent answered to reach the verdict
+  evidence: string            // the agent's reasoning (shown in the per-mode <details> body)
+}
+
+// The full integrity report for one gate run (Stage 2.5 now; 4.5 reuses this in P15).
+export interface IntegrityReport {
+  stage: '2.5' | '4.5'
+  // The agent's SELF-REPORTED verdict. Advisory only — UI trusts deriveGateDecision().
+  verdict: 'PASS' | 'PASS_WITH_CONDITIONS' | 'FAIL'
+  modes: FailureModeResult[]              // exactly 7 rows, one per id, ordered M1..M7
+  citationIntegrityScore: number          // 0.0 – 1.0 (1.0 = all citations look real)
+  fabricationRiskScore: number            // 0.0 – 1.0 (1.0 = high risk of fabricated results)
+  overallIssues: { serious: number; medium: number; minor: number }
+  overrideReason?: string                 // set ONLY via the bounded 2.5 override flow
+  timestamp: string                       // ISO 8601 (caller stamps it if the agent omits it)
+}
+
+// One section of a draft, in the flat plain-text form the integrity agent reads.
+// (Distinct from the editor's HTML `Section` — this is the handoff projection.)
+export interface DraftSection {
+  sectionId: string
+  heading: string
+  targetWords: number
+  content: string             // plain text; may contain [MATERIAL GAP ...] tags
+  materialGapCount: number    // count of /\[MATERIAL GAP[^\]]*\]/g matches in content
+}
+
+// The whole paper draft handed to the integrity agent (Schema 4). schemaId is a
+// literal 4 so the parser can assert it and reject a mis-routed block.
+export interface PaperDraft {
+  schemaId: 4
+  versionLabel: string        // e.g. "paper_draft_v1"
+  sections: DraftSection[]
+  wordCountTotal: number
+}
+
+// One append-only audit entry. This is the Stage-6 "what happened, by whom, why"
+// log — it is NEVER rewritten, only appended to (immutable history).
+export interface ComplianceEntry {
+  timestamp: string
+  action: 'integrity_pass' | 'override' | 'schema_retry' | 'edit_after_pass' | 'content_frozen'
+  agentId: string
+  reason?: string             // REQUIRED when action === 'override' (the permanent override rationale)
+}

@@ -13,3 +13,5 @@ export { REVIEWER_SKILL_PROMPT }       from './reviewer_skill'
 export { PEER_REVIEWER_PROMPT }        from './peer_reviewer'
 export { SOURCE_VERIFICATION_PROMPT }  from './source_verification'
 export { SYNTHESIS_AGENT_PROMPT }      from './synthesis_agent'
+// P10 Stage 2.5: integrity verification gatekeeper (reused at Stage 4.5 in P15).
+export { INTEGRITY_VERIFICATION_PROMPT } from './integrity_verification'

@@ -6,18 +6,23 @@
 // extractJsonBlock does the "find the JSON" step; the parseSchemaN functions do
 // the field validation (see schema1/2/3.ts).
 
-import type { RQBrief, Bibliography, SynthesisReport } from '@/lib/types'
+import type { RQBrief, Bibliography, SynthesisReport, PaperDraft, IntegrityReport } from '@/lib/types'
 import { parseSchema1 } from './schema1'
 import { parseSchema2 } from './schema2'
 import { parseSchema3 } from './schema3'
+import { parseSchema4 } from './schema4'
+import { parseSchema5 } from './schema5'
 
 // Which schema a given agent's output maps to.
-export type SchemaId = 'schema1' | 'schema2' | 'schema3'
+// schema1–3: P9 deep-research handoffs. schema4: P10 paper draft. schema5: P10 integrity report.
+export type SchemaId = 'schema1' | 'schema2' | 'schema3' | 'schema4' | 'schema5'
 
 export { HandoffIncompleteError } from './errors'
 export { parseSchema1 } from './schema1'
 export { parseSchema2 } from './schema2'
 export { parseSchema3 } from './schema3'
+export { parseSchema4 } from './schema4'
+export { parseSchema5 } from './schema5'
 
 // ── extractJsonBlock ─────────────────────────────────────────────────────────
 // Pull the JSON object out of an agent's free-form reply.
@@ -136,7 +141,10 @@ function findLastBalancedObject(raw: string): string | null {
 // ── parseSchema dispatcher ───────────────────────────────────────────────────
 // Route a raw agent reply to the correct parser by schema id. Lets a caller that
 // only knows "this is schema2 output" parse without importing each function.
-export function parseSchema(raw: string, schemaId: SchemaId): RQBrief | Bibliography | SynthesisReport {
+export function parseSchema(
+  raw: string,
+  schemaId: SchemaId,
+): RQBrief | Bibliography | SynthesisReport | PaperDraft | IntegrityReport {
   switch (schemaId) {
     case 'schema1':
       return parseSchema1(raw)
@@ -144,6 +152,10 @@ export function parseSchema(raw: string, schemaId: SchemaId): RQBrief | Bibliogr
       return parseSchema2(raw)
     case 'schema3':
       return parseSchema3(raw)
+    case 'schema4':
+      return parseSchema4(raw)
+    case 'schema5':
+      return parseSchema5(raw)
     default: {
       // Exhaustiveness guard: if SchemaId ever grows a new member, TypeScript
       // flags this branch at compile time.

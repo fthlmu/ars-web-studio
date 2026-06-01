@@ -14,6 +14,8 @@ import {
   DRAFT_WRITER_PROMPT,
   CITATION_COMPLIANCE_PROMPT,
   ABSTRACT_BILINGUAL_PROMPT,
+  // P10 Stage 2.5: the integrity-gate agent prompt (reused at Stage 4.5 in P15).
+  INTEGRITY_VERIFICATION_PROMPT,
 } from './ars-agents'
 // P9: the 5 deep-research agent prompts that make up the Stage-1 research chain.
 // (This module is created by the deep-research agent in parallel; same path/names.)
@@ -25,7 +27,8 @@ import {
   METHODOLOGY_SELECTOR_PROMPT,
 } from './ars-agents/deep-research'
 // P9: the JSON handoff parsers + the error they throw when a field is missing.
-import { parseSchema1, parseSchema2, parseSchema3, HandoffIncompleteError } from './schemas'
+// P10 adds parseSchema5 (the integrity report parser).
+import { parseSchema1, parseSchema2, parseSchema3, parseSchema5, HandoffIncompleteError } from './schemas'
 import type {
   PaperConfig,
   Section,
@@ -36,6 +39,11 @@ import type {
   Bibliography,
   SynthesisReport,
   MethodologyType,
+  // P10 Stage 2.5 types: the whole-paper state, the draft handoff, and the report.
+  PaperState,
+  PaperDraft,
+  DraftSection,
+  IntegrityReport,
 } from './types'
 
 // ─── Core streaming primitive ────────────────────────────────────────────────
@@ -831,4 +839,187 @@ export async function runResearch(
     bibliography: acc.bibliography as Bibliography,
     synthesis: acc.synthesis as SynthesisReport,
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P10: STAGE 2.5 — INTEGRITY GATE ORCHESTRATION
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// After the draft sections are written (P5) the paper must pass an academic
+// INTEGRITY GATE before it can advance to peer review. Think of it like a
+// continuity / DRC check on a finished PCB layout: before you send the board
+// out, an independent checker scans for 7 known failure classes (M1..M7) and
+// reports a verdict per class. We:
+//
+//   1. project the editor's HTML sections into a flat plain-text PaperDraft
+//      (Schema 4) — buildPaperDraft();
+//   2. hand that draft to the integrity_verification agent and FORCE it to end
+//      with one Schema-5 JSON block (exactly 7 modes M1..M7 + both scores +
+//      overallIssues) — runIntegrityGate();
+//   3. parse + validate that block with parseSchema5 (retry once on a missing
+//      field, then rethrow), and stamp the timestamp if the agent omitted it.
+//
+// The binding pass/fail decision is NOT made here — it is recomputed by
+// deriveGateDecision() in integrity.ts. This module only produces the report.
+// The SAME runIntegrityGate is reused at Stage 4.5 in P15 (hence the stage param).
+
+// The regex that marks a "no source covers this claim" gap. ONE definition,
+// reused for both the per-section count and the total — keep it in sync with the
+// editor decoration (material-gap-mark.ts) and SectionReviewGate.
+const MATERIAL_GAP_REGEX = /\[MATERIAL GAP[^\]]*\]/g
+
+// Count the [MATERIAL GAP ...] tags in a plain-text string. Uses a fresh match
+// each call (String.match with /g returns all matches or null) so the shared
+// regex's lastIndex never leaks between calls.
+function countMaterialGaps(text: string): number {
+  const matches = text.match(MATERIAL_GAP_REGEX)
+  return matches ? matches.length : 0
+}
+
+/**
+ * Projects the live editor PaperState into the flat Schema-4 PaperDraft the
+ * integrity agent reads. Each editor Section (HTML) becomes a DraftSection with:
+ *   - content    : plain text via stripHtml (the agent never needs HTML markup)
+ *   - targetWords: the planned length for that section (getSectionWordCount)
+ *   - materialGapCount: recomputed from the plain text (never trust a stored count)
+ *
+ * @param state - the whole paper state from localStorage
+ * @returns     - a Schema-4 PaperDraft (schemaId 4, versionLabel 'paper_draft_v1')
+ */
+export function buildPaperDraft(state: PaperState): PaperDraft {
+  const sections: DraftSection[] = state.sections.map((s) => {
+    const content = stripHtml(s.content)
+    return {
+      sectionId: s.id,
+      heading: s.heading,
+      // Planned target length for this heading (same helper the pipeline uses).
+      targetWords: getSectionWordCount(state.config.wordCount, state.config.paperType, s.heading),
+      content,
+      // Recompute from the plain text — do not trust any pre-stored count.
+      materialGapCount: countMaterialGaps(content),
+    }
+  })
+
+  // Total words = sum of each section's plain-text word count. Split on runs of
+  // whitespace; filter empties so a trailing space does not inflate the count.
+  const wordCountTotal = sections.reduce((sum, s) => {
+    const words = s.content.split(/\s+/).filter((w) => w.length > 0)
+    return sum + words.length
+  }, 0)
+
+  return {
+    schemaId: 4,
+    versionLabel: 'paper_draft_v1',
+    sections,
+    wordCountTotal,
+  }
+}
+
+// ─── Schema-5 output contract appended to the integrity agent's userMessage ──
+//
+// Mirrors the P9 CONTRACT_* pattern: we append a strict instruction so the agent
+// ends its reply with exactly one fenced json block matching IntegrityReport,
+// with EXACTLY 7 mode rows M1..M7, both 0..1 scores, and the overallIssues object.
+// Software (parseSchema5) parses this block; a missing field aborts the gate.
+const CONTRACT_INTEGRITY = `${OUTPUT_CONTRACT_INTRO}
+Required JSON shape (IntegrityReport — Schema 5). The "modes" array MUST contain
+EXACTLY 7 objects, one for EACH id M1, M2, M3, M4, M5, M6, M7 (no duplicates, none
+omitted), in that order:
+{
+  "stage": "2.5",
+  "verdict": "PASS" | "PASS_WITH_CONDITIONS" | "FAIL",   // your advisory self-assessment
+  "modes": [
+    { "modeId": "M1", "modeName": "Implementation bug passing AI self-review", "verdict": "CLEAR" | "SUSPECTED" | "INSUFFICIENT_EVIDENCE", "detectionQuestion": string, "evidence": string },
+    { "modeId": "M2", "modeName": "Hallucinated citation",                      "verdict": "CLEAR" | "SUSPECTED" | "INSUFFICIENT_EVIDENCE", "detectionQuestion": string, "evidence": string },
+    { "modeId": "M3", "modeName": "Hallucinated experimental result",          "verdict": "CLEAR" | "SUSPECTED" | "INSUFFICIENT_EVIDENCE", "detectionQuestion": string, "evidence": string },
+    { "modeId": "M4", "modeName": "Shortcut reliance",                         "verdict": "CLEAR" | "SUSPECTED" | "INSUFFICIENT_EVIDENCE", "detectionQuestion": string, "evidence": string },
+    { "modeId": "M5", "modeName": "Bug reframed as novel insight",             "verdict": "CLEAR" | "SUSPECTED" | "INSUFFICIENT_EVIDENCE", "detectionQuestion": string, "evidence": string },
+    { "modeId": "M6", "modeName": "Methodology fabrication",                   "verdict": "CLEAR" | "SUSPECTED" | "INSUFFICIENT_EVIDENCE", "detectionQuestion": string, "evidence": string },
+    { "modeId": "M7", "modeName": "Frame-lock",                                "verdict": "CLEAR" | "SUSPECTED" | "INSUFFICIENT_EVIDENCE", "detectionQuestion": string, "evidence": string }
+  ],
+  "citationIntegrityScore": number,   // 0.0 - 1.0 (1.0 = every citation looks real/verifiable)
+  "fabricationRiskScore": number,     // 0.0 - 1.0 (1.0 = high risk of fabricated data/results)
+  "overallIssues": { "serious": number, "medium": number, "minor": number }
+}`
+
+// Render the draft as plain text the agent can read end-to-end: each section's
+// heading followed by its plain-text body (which may contain [MATERIAL GAP] tags).
+function draftBlock(draft: PaperDraft): string {
+  const body = draft.sections
+    .map((s) => `## ${s.heading} (target ~${s.targetWords} words)\n\n${s.content}`)
+    .join('\n\n---\n\n')
+  return `## Paper Draft (${draft.versionLabel}, ~${draft.wordCountTotal} words)\n${body}`
+}
+
+/**
+ * Runs the Stage-2.5 integrity gate over a finished draft. Streams the agent's
+ * reasoning through onChunk, forces a Schema-5 JSON block, parses + validates it
+ * (retry ONCE on a missing field, then rethrow — mirrors runResearch), and stamps
+ * the timestamp if the agent omitted it.
+ *
+ * @param draft       - the Schema-4 PaperDraft (from buildPaperDraft)
+ * @param config      - the Paper Configuration Record (citation format, topic, etc.)
+ * @param stage       - '2.5' now, '4.5' when reused after revision in P15 (NOT hard-coded)
+ * @param onChunk     - called with each streamed text chunk (live UI updates)
+ * @param modelConfig - which model to route to (optional; server defaults to Sonnet)
+ * @returns           - the parsed, timestamp-stamped IntegrityReport
+ */
+export async function runIntegrityGate(
+  draft: PaperDraft,
+  config: PaperConfig,
+  stage: '2.5' | '4.5',
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig
+): Promise<IntegrityReport> {
+  // Build the single user message: config context + the full draft + the strict
+  // Schema-5 output contract. The stage is embedded so the agent knows which gate
+  // it is running (pre-review 2.5 vs post-revision 4.5).
+  const userMessage = `
+You are the academic integrity verification gatekeeper running pipeline Stage ${stage}.
+Inspect the paper draft below for the 7 known AI-research failure modes (M1..M7) and
+report a verdict for EACH mode. Base every verdict on evidence visible in the draft and
+configuration; where you cannot verify a mode (e.g. no run logs or raw data are provided),
+mark it INSUFFICIENT_EVIDENCE rather than guessing CLEAR.
+
+${configBlock(config)}
+
+${draftBlock(draft)}
+
+${CONTRACT_INTEGRITY}
+`.trim()
+
+  // One call = one parse attempt. Factored so the retry path is identical.
+  const runOnce = async (): Promise<IntegrityReport> => {
+    const raw = await callAgent(INTEGRITY_VERIFICATION_PROMPT, userMessage, onChunk, modelConfig)
+    const parsed = parseSchema5(raw)
+    // Pin the stage to the gate that PRODUCED this report — never trust the agent's
+    // echoed stage. The prompt names both gates (2.5 / 4.5) and is reused verbatim at
+    // 4.5, so the agent could echo the wrong literal; if it did, the header would
+    // render the wrong "Stage X" and any future per-stage logic would key off the
+    // wrong stamp. The requested `stage` param is the single source of truth.
+    return parsed.stage === stage ? parsed : { ...parsed, stage }
+  }
+
+  let report: IntegrityReport
+  try {
+    report = await runOnce()
+  } catch (err) {
+    if (err instanceof HandoffIncompleteError) {
+      // Retry the SAME call exactly once (mirrors runResearch's single auto-retry).
+      console.warn('[runIntegrityGate] schema5 handoff incomplete, retrying once:', err.message)
+      report = await runOnce() // a second failure throws out of this function (rethrow)
+    } else {
+      // Network / server / non-handoff failure — surface it to the caller (the page
+      // turns this into the EH-02 "Integrity check failed to complete. Retry?" state).
+      throw err
+    }
+  }
+
+  // parseSchema5 leaves timestamp '' when the agent omits it — stamp it with the
+  // current ISO-8601 time, the same call storage.ts / the research page use.
+  if (report.timestamp === '') {
+    report = { ...report, timestamp: new Date().toISOString() }
+  }
+
+  return report
 }

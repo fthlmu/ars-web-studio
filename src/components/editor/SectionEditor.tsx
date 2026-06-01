@@ -15,6 +15,7 @@ import { marked } from 'marked'
 import 'katex/dist/katex.min.css'
 
 import { Toolbar } from './Toolbar'
+import { MaterialGapHighlight } from '@/lib/editor/material-gap-mark'
 import { Button } from '@/components/ui/button'
 import { generateSection, getSectionWordCount, stripHtml } from '@/lib/ars-client'
 import type { PaperConfig, Section } from '@/lib/types'
@@ -138,6 +139,7 @@ export function SectionEditor({
       Mathematics.configure({
         katexOptions: { throwOnError: false },
       }),   // enables $...$ (inline) and $$...$$ (display) math via KaTeX
+      MaterialGapHighlight,   // render-only yellow highlight on [MATERIAL GAP ...] tags (FR-13/FR-14)
     ],
     content: toHtml(section.content),
     editorProps: {
