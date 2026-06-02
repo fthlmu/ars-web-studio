@@ -18,9 +18,29 @@ import type {
   EditorialDecision,
   ReviewConsensus,
   RoadmapItem,
+  RRMatrixRow,
+  RRResolutionStatus,
+  ScoreTrajectoryEntry,
 } from '@/lib/types'
 import { extractJsonBlock } from './index'
 import { HandoffIncompleteError } from './errors'
+
+// ── P14 re-review options ────────────────────────────────────────────────────
+// The Stage-3' re-review is a NARROW 3-agent panel (EIC + R1 + R2; DA only if a
+// DA-CRITICAL fired at Stage 3), so it cannot satisfy the standard "exactly 5
+// reviewers" guarantee. `mode: 'reReview'` relaxes the role requirement to the
+// narrow team and additionally parses the R&R Traceability Matrix, the residual
+// issues, and any agent-supplied score trajectory (runReReview recomputes the
+// trajectory in software, so the parsed one is only a fallback).
+export interface ParseSchema6Options {
+  mode?: 'standard' | 'reReview'
+}
+
+// The 3 roles a Stage-3' narrow re-review MUST include. R3 + DA are optional there.
+const RE_REVIEW_REQUIRED_ROLES: ReviewerRole[] = ['EIC', 'R1', 'R2']
+
+// The three R&R resolution-status literals.
+const RR_STATUSES: RRResolutionStatus[] = ['Resolved', 'Partially Resolved', 'Unresolved']
 
 // ── small defensive guards (mirror schema5) ──
 
@@ -108,9 +128,58 @@ function toRoadmapItem(raw: unknown, index: number): RoadmapItem | null {
   return item
 }
 
+// Leniently map ONE raw item to an RRMatrixRow (P14 re-review only). The R&R matrix is
+// ADVISORY display data, so a malformed row is SKIPPED with a warn — we never throw on it.
+function toRRMatrixRow(raw: unknown, index: number): RRMatrixRow | null {
+  if (!isObject(raw)) {
+    console.warn('parseSchema6: rrMatrix[' + index + '] is not an object — skipping')
+    return null
+  }
+  const r = raw as Record<string, unknown>
+  // comment + status are the minimum needed to render a meaningful row.
+  if (typeof r.comment !== 'string' || r.comment.trim().length === 0) {
+    console.warn('parseSchema6: rrMatrix[' + index + '] missing comment — skipping')
+    return null
+  }
+  if (!RR_STATUSES.includes(r.status as RRResolutionStatus)) {
+    console.warn('parseSchema6: rrMatrix[' + index + '] invalid status — skipping')
+    return null
+  }
+  const row: RRMatrixRow = {
+    id: typeof r.id === 'string' && r.id.trim().length > 0 ? String(r.id) : 'rr-' + index,
+    comment: String(r.comment),
+    revision: typeof r.revision === 'string' ? String(r.revision) : '',
+    status: r.status as RRResolutionStatus,
+  }
+  if (typeof r.reviewer === 'string') row.reviewer = String(r.reviewer)
+  if (typeof r.targetSection === 'string') row.targetSection = String(r.targetSection)
+  return row
+}
+
+// Leniently map ONE raw item to a ScoreTrajectoryEntry (P14 re-review only). Only used as
+// a fallback — runReReview computes the authoritative trajectory in software. Skips
+// malformed rows; computes `delta` if the agent omitted it.
+function toTrajectoryEntry(raw: unknown, index: number): ScoreTrajectoryEntry | null {
+  if (!isObject(raw)) return null
+  const r = raw as Record<string, unknown>
+  if (typeof r.dimension !== 'string' || r.dimension.trim().length === 0) return null
+  const s3 = toScore100(r.stage3)
+  const s3p = toScore100(r.stage3Prime)
+  if (Number.isNaN(s3) || Number.isNaN(s3p)) {
+    console.warn('parseSchema6: scoreTrajectory[' + index + '] missing/invalid scores — skipping')
+    return null
+  }
+  const delta = typeof r.delta === 'number' && !Number.isNaN(r.delta) ? r.delta : s3p - s3
+  return { dimension: String(r.dimension), stage3: s3, stage3Prime: s3p, delta }
+}
+
 // Parse + validate the Phase-2 Review Report. Throws HandoffIncompleteError if
-// any required field is missing or invalid.
-export function parseSchema6(raw: string): ReviewerScoreSet {
+// any required field is missing or invalid. In re-review mode (P14) only the narrow
+// 3-agent team is required and the R&R matrix / residual issues / trajectory are parsed.
+export function parseSchema6(raw: string, opts?: ParseSchema6Options): ReviewerScoreSet {
+  const mode = opts?.mode ?? 'standard'
+  // Which roles MUST be present. Standard Stage 3: all 5. Re-review Stage 3': the narrow team.
+  const requiredRoles: ReviewerRole[] = mode === 'reReview' ? RE_REVIEW_REQUIRED_ROLES : ROLE_ORDER
   const data = extractJsonBlock(raw)
   const missing: string[] = []
 
@@ -150,61 +219,61 @@ export function parseSchema6(raw: string): ReviewerScoreSet {
     })
   }
 
-  // Now demand exactly one valid row for EACH of the 5 roles, and validate it.
-  // We build the coerced rows here so the "exactly 5, EIC..DA" guarantee holds.
+  // Now demand one valid row for each REQUIRED role and validate it. In standard mode
+  // that is all 5 (EIC..DA); in re-review mode only the narrow team (EIC,R1,R2) is
+  // required while R3/DA are included opportunistically when validly present. We still
+  // walk ROLE_ORDER so any present optional role lands in canonical order.
   const reviewerRows: ReviewerReport[] = []
   for (const role of ROLE_ORDER) {
+    const isRequired = requiredRoles.includes(role)
     const row = byRole.get(role)
     if (!row) {
-      // Missing entirely — the review logic cannot average a missing reviewer.
-      missing.push('reviewers.' + role)
+      // A REQUIRED role missing is fatal (the review logic cannot average it); an
+      // OPTIONAL role missing (re-review R3/DA) is simply skipped.
+      if (isRequired) missing.push('reviewers.' + role)
       continue
     }
 
-    // overallScore — required, numeric in [0,100].
+    // Collect this row's problems locally; only escalate them to missing[] when the
+    // role is required, so a malformed OPTIONAL reviewer is skipped, not fatal.
+    const rowMissing: string[] = []
+
+    // overallScore — numeric in [0,100].
     const overallScore = toScore100(row.overallScore)
-    if (Number.isNaN(overallScore)) {
-      missing.push('reviewers.' + role + '.overallScore')
-    }
+    if (Number.isNaN(overallScore)) rowMissing.push('reviewers.' + role + '.overallScore')
 
     // dimensions — object with all 5 numeric 0-100 keys.
     const dims = row.dimensions
     const dimScores: Partial<ReviewerDimensionScores> = {}
     if (!isObject(dims)) {
-      missing.push('reviewers.' + role + '.dimensions')
+      rowMissing.push('reviewers.' + role + '.dimensions')
     } else {
       for (const key of DIMENSION_KEYS) {
         const n = toScore100((dims as Record<string, unknown>)[key])
-        if (Number.isNaN(n)) {
-          missing.push('reviewers.' + role + '.dimensions.' + key)
-        } else {
-          dimScores[key] = n
-        }
+        if (Number.isNaN(n)) rowMissing.push('reviewers.' + role + '.dimensions.' + key)
+        else dimScores[key] = n
       }
     }
 
-    // recommendation — required, one of the 4 EditorialDecision literals.
+    // recommendation — one of the 4 EditorialDecision literals.
     const recommendation = row.recommendation
     if (!EDITORIAL_DECISIONS.includes(recommendation as EditorialDecision)) {
-      missing.push('reviewers.' + role + '.recommendation')
+      rowMissing.push('reviewers.' + role + '.recommendation')
     }
 
     // reviewerName defaults to the role string; keyComments/requiredChanges to [].
-    // These are not hard-required, so they never push to missing[].
     const reviewerName =
       typeof row.reviewerName === 'string' && row.reviewerName.trim().length > 0
         ? String(row.reviewerName)
         : role
 
-    // Only assemble the row when its required parts validated. (If something was
-    // missing we already recorded it; this row simply won't be pushed, and the
-    // missing[] throw below aborts the whole parse anyway.)
-    if (
+    const rowValid =
       !Number.isNaN(overallScore) &&
       isObject(dims) &&
       DIMENSION_KEYS.every((k) => dimScores[k] !== undefined) &&
       EDITORIAL_DECISIONS.includes(recommendation as EditorialDecision)
-    ) {
+
+    if (rowValid) {
       reviewerRows.push({
         role,
         reviewerName,
@@ -214,6 +283,11 @@ export function parseSchema6(raw: string): ReviewerScoreSet {
         requiredChanges: toStringArray(row.requiredChanges),
         recommendation: recommendation as EditorialDecision,
       })
+    } else if (isRequired) {
+      // A required role that didn't validate aborts the parse (record its problems).
+      missing.push(...rowMissing)
+    } else {
+      console.warn('parseSchema6: optional reviewer ' + role + ' malformed — skipping:', rowMissing.join(', '))
     }
   }
 
@@ -265,6 +339,33 @@ export function parseSchema6(raw: string): ReviewerScoreSet {
       if (roadmapItem) mapped.push(roadmapItem)
     })
     if (mapped.length > 0) report.revisionRoadmap = mapped
+  }
+
+  // ── P14 re-review extras (only in reReview mode; all ADVISORY / lenient) ──
+  // The R&R matrix, residual issues, and any agent-supplied score trajectory. None of
+  // these abort the parse — they enrich the Stage-3' panel. runReReview overwrites the
+  // trajectory with a software-computed one, so the parsed value is only a fallback.
+  if (mode === 'reReview') {
+    if (Array.isArray(data.rrMatrix)) {
+      const rows: RRMatrixRow[] = []
+      data.rrMatrix.forEach((item, i) => {
+        const row = toRRMatrixRow(item, i)
+        if (row) rows.push(row)
+      })
+      if (rows.length > 0) report.rrMatrix = rows
+    }
+    if (Array.isArray(data.residualIssues)) {
+      const issues = toStringArray(data.residualIssues).filter((s) => s.trim().length > 0)
+      if (issues.length > 0) report.residualIssues = issues
+    }
+    if (Array.isArray(data.scoreTrajectory)) {
+      const traj: ScoreTrajectoryEntry[] = []
+      data.scoreTrajectory.forEach((item, i) => {
+        const entry = toTrajectoryEntry(item, i)
+        if (entry) traj.push(entry)
+      })
+      if (traj.length > 0) report.scoreTrajectory = traj
+    }
   }
 
   return report

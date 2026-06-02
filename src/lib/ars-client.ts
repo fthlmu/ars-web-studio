@@ -63,10 +63,14 @@ import type {
   // 5-reviewer review report (Schema 6) produced by the two-phase Sprint Contract.
   ScoringPlan,
   ReviewerScoreSet,
+  ReviewerDimensionScores,
   // P12 Stage 3→4 (Coaching): the advisory revision roadmap items the EIC coaches against,
   // plus one persisted coaching turn (fed into the P13 revision context).
   RoadmapItem,
   CoachingMessage,
+  // P14 Stage 3' (Re-Review): one row of the per-dimension Stage-3 vs Stage-3' comparison,
+  // computed in software by runReReview from the two review reports.
+  ScoreTrajectoryEntry,
   // P13 Stage 4 (Revision): the grouped roadmap (Schema 7), the per-section before→after
   // Delta Report, and its rows — produced by runRevision().
   RevisionRoadmap,
@@ -1277,6 +1281,184 @@ ${CONTRACT_REVIEW}
     if (err instanceof HandoffIncompleteError) {
       // Retry the SAME call exactly once (mirrors runIntegrityGate's single auto-retry).
       console.warn('[runReviewPhase2] schema6 handoff incomplete, retrying once:', err.message)
+      return await runOnce() // a second failure throws out of this function (rethrow)
+    }
+    // Network / server / non-handoff failure (incl. an IR-03 403) — surface to the caller.
+    throw err
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P14: STAGE 3' — RE-REVIEW ORCHESTRATION (narrow 3-agent team)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// After a revision is approved (and one revision loop remains), the REVISED draft is
+// re-scored by a NARROW panel — the Editor-in-Chief plus two referees (R1, R2), and
+// the Devil's Advocate ONLY if a DA-CRITICAL flag fired at Stage 3. Think of it like a
+// focused re-test of just the channels that failed the first bench check, rather than a
+// full re-run of the whole acceptance suite.
+//
+// runReReview() reuses PEER_REVIEWER_PROMPT (no new bundle) but with a re-review contract
+// that ALSO asks for an R&R Traceability Matrix (one row per original reviewer comment →
+// what the revision did → Resolved/Partially/Unresolved) and a residual-issues list. The
+// per-dimension Score Trajectory (Stage 3 → Stage 3' → delta) is NOT trusted from the
+// agent — runReReview computes it deterministically from the two review reports, so the
+// regression checkpoint can never be gamed by a bad agent number.
+
+// IR-03 access tag for the re-review. Same verified_only reviewer, under the
+// running-re-review pipeline status (a legal verified-only point, like running-peer-review).
+const RE_REVIEW_ACCESS = {
+  dataAccessLevel: 'verified_only',
+  agentId: 'peer_reviewer_agent',
+  pipelineStatus: 'running-re-review',
+} as const
+
+// The 5 rubric dimension keys, paired with the camelCase keys on ReviewerDimensionScores,
+// so the software-computed Score Trajectory averages the same axes the panel scored.
+const TRAJECTORY_DIMENSIONS: { key: keyof ReviewerDimensionScores; label: string }[] = [
+  { key: 'novelty', label: 'Novelty' },
+  { key: 'methodology', label: 'Methodology' },
+  { key: 'clarity', label: 'Clarity' },
+  { key: 'contribution', label: 'Contribution' },
+  { key: 'citation', label: 'Citation' },
+]
+
+// Average a panel's score on ONE dimension across its reviewers (rounded 0-100).
+// Returns 0 for an empty panel (defensive — the parser guarantees ≥3 reviewers at 3').
+function avgDimension(review: ReviewerScoreSet, key: keyof ReviewerDimensionScores): number {
+  const xs = review.reviewers.map((r) => r.dimensions[key])
+  if (xs.length === 0) return 0
+  return Math.round(xs.reduce((a, b) => a + b, 0) / xs.length)
+}
+
+/**
+ * Computes the per-dimension Score Trajectory from the Stage-3 review and the Stage-3'
+ * re-review — deterministically, in software (never trusting the agent's numbers). Each
+ * row is the panel AVERAGE on that dimension at each stage; delta = stage3Prime - stage3
+ * (negative = the score dropped, which the UI flags as a regression when the drop > 3).
+ */
+export function computeScoreTrajectory(
+  stage3: ReviewerScoreSet,
+  stage3Prime: ReviewerScoreSet,
+): ScoreTrajectoryEntry[] {
+  return TRAJECTORY_DIMENSIONS.map(({ key, label }) => {
+    const a = avgDimension(stage3, key)
+    const b = avgDimension(stage3Prime, key)
+    return { dimension: label, stage3: a, stage3Prime: b, delta: b - a }
+  })
+}
+
+// ─── Re-review output contract appended to the re-review agent's userMessage ────
+//
+// Narrow team + R&R matrix + residual issues. The DA line is conditional: the caller
+// substitutes it depending on whether a DA-CRITICAL fired at Stage 3.
+function buildReReviewContract(includeDA: boolean): string {
+  const team = includeDA
+    ? 'EXACTLY 4 reviewer objects: EIC (Editor-in-Chief), R1, R2, and DA (Devil\'s Advocate — included because a DA-CRITICAL flag fired at Stage 3)'
+    : 'EXACTLY 3 reviewer objects: EIC (Editor-in-Chief), R1, and R2 (no DA — none was critical at Stage 3)'
+  return `${OUTPUT_CONTRACT_INTRO}
+You are a NARROW re-review panel re-scoring a REVISED paper against the original Stage-3
+review. Emit ${team}, each scoring all five dimensions (novelty, methodology, clarity,
+contribution, citation) and an overall score, all 0-100.
+Decision thresholds (overall 0-100): >= 80 Accept, 65-79 Minor Revision, 50-64 Major
+Revision, < 50 Reject. A DA critical flag OVERRIDES a numeric pass.
+ALSO produce an R&R Traceability Matrix: one row PER original reviewer required-change /
+roadmap item, recording what the revision did and whether it is now resolved.
+Required JSON shape (ReviewerScoreSet — Schema 6'):
+{
+  "sprintContractId": string,
+  "reviewers": [
+    { "role": "EIC" | "R1" | "R2"${includeDA ? ' | "DA"' : ''},
+      "reviewerName": string,
+      "overallScore": number,
+      "dimensions": { "novelty": number, "methodology": number, "clarity": number, "contribution": number, "citation": number },
+      "keyComments": string[],
+      "requiredChanges": string[],
+      "recommendation": "Accept" | "Minor Revision" | "Major Revision" | "Reject" }
+  ],
+  "editorialDecision": "Accept" | "Minor Revision" | "Major Revision" | "Reject",
+  "consensus": "CONSENSUS-4" | "CONSENSUS-3" | "SPLIT" | "DA-CRITICAL",
+  "confidenceScore": number,
+  "daCritical": boolean,
+  "rrMatrix": [
+    { "id": string, "comment": string,            // the ORIGINAL Stage-3 reviewer comment
+      "revision": string,                          // what the revision actually did about it
+      "status": "Resolved" | "Partially Resolved" | "Unresolved",
+      "reviewer": string, "targetSection": string }
+  ],
+  "residualIssues": string[]                       // issues the re-review still flags (may be [])
+}`
+}
+
+/**
+ * Runs the Stage-3' narrow re-review over the REVISED draft. Streams the agent's
+ * reasoning through onChunk, forces the Schema-6' block (narrow team + R&R matrix +
+ * residual issues), parses it in re-review mode (retry ONCE on a missing field, then
+ * rethrow), then attaches the SOFTWARE-computed Score Trajectory vs Stage 3.
+ *
+ * @param config       - the Paper Configuration Record
+ * @param revisedDraft - the revised Schema-4 draft being re-scored (paper.revisedDraft)
+ * @param stage3Review - the original Stage-3 Review Report (for the trajectory + the matrix input)
+ * @param roadmap      - the advisory Stage-3 roadmap items the revision worked from
+ * @param onChunk      - called with each streamed text chunk (live UI updates)
+ * @param modelConfig  - which model to route to (optional; server defaults to Sonnet)
+ * @returns            - the parsed re-review ReviewerScoreSet (+ rrMatrix, residualIssues, scoreTrajectory)
+ */
+export async function runReReview(
+  config: PaperConfig,
+  revisedDraft: PaperDraft,
+  stage3Review: ReviewerScoreSet,
+  roadmap: RoadmapItem[],
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig,
+): Promise<ReviewerScoreSet> {
+  // DA joins the narrow team ONLY if it tripped the critical interlock at Stage 3.
+  const includeDA = stage3Review.daCritical || stage3Review.consensus === 'DA-CRITICAL'
+
+  // The original required-changes/roadmap, listed so the agent can build the R&R matrix.
+  const originalComments =
+    roadmap.length > 0
+      ? roadmap
+          .map((item) => `  - [${item.priority}] (${item.reviewer ?? 'reviewer'}) ${item.description}`)
+          .join('\n')
+      : stage3Review.reviewers
+          .flatMap((r) => r.requiredChanges.map((c) => `  - (${r.role}) ${c}`))
+          .join('\n') || '  (no explicit required changes were recorded at Stage 3)'
+
+  const userMessage = `
+You are the Stage-3' narrow re-review panel. A revised paper returns for re-scoring after
+peer review and revision. Re-score the REVISED draft against the original Stage-3 review,
+and trace each original reviewer comment to what the revision did about it.
+
+${configBlock(config)}
+
+${priorBlock('Original Stage-3 Review Report (Schema 6)', stage3Review)}
+
+## Original reviewer comments / roadmap (build one R&R matrix row per item)
+${originalComments}
+
+${draftBlock(revisedDraft)}
+
+${buildReReviewContract(includeDA)}
+`.trim()
+
+  // One call = one parse attempt. Factored so the retry path is identical (mirrors P11).
+  const runOnce = async (): Promise<ReviewerScoreSet> => {
+    const raw = await callAgent(PEER_REVIEWER_PROMPT, userMessage, onChunk, modelConfig, {
+      access: RE_REVIEW_ACCESS,
+    })
+    // re-review mode: only the narrow team is required; rrMatrix/residualIssues parsed leniently.
+    const report = parseSchema6(raw, { mode: 'reReview' })
+    // Overwrite the (advisory) trajectory with the deterministic software-computed one.
+    report.scoreTrajectory = computeScoreTrajectory(stage3Review, report)
+    return report
+  }
+
+  try {
+    return await runOnce()
+  } catch (err) {
+    if (err instanceof HandoffIncompleteError) {
+      console.warn('[runReReview] schema6 (re-review) handoff incomplete, retrying once:', err.message)
       return await runOnce() // a second failure throws out of this function (rethrow)
     }
     // Network / server / non-handoff failure (incl. an IR-03 403) — surface to the caller.

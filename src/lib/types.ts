@@ -115,6 +115,33 @@ export interface PaperState {
   revisionStatus?: 'idle' | 'running' | 'awaiting-approval' | 're-review' | 'final-gate' | 'error'
   // revisionLoopCount (declared in the P11 block above) is the iron-rule loop counter:
   // incremented on a revision Approve here; <2 routes to re-review, ==2 to the final gate.
+
+  // ── P14: Stage 3'/4' (Re-Review / Re-Revise) state ──
+  // Same DR-01 back-compat rule as every block above: ALL optional, so a paper saved
+  // under P0–P13 (which never ran the re-review loop) still loads cleanly.
+  //
+  // Entered from the P13 revise Approve handoff when revisionLoopCount < 2 (the
+  // 're-review' route). A NARROW 3-agent panel re-scores the REVISED draft, produces an
+  // R&R Traceability Matrix + a per-dimension Score Trajectory vs Stage 3, and the human
+  // either requests one final revision (the single permitted RE-REVISE) or accepts and
+  // advances to the Stage-4.5 final gate.
+  //
+  // IRON RULE #2 (max 2 revision loops / max 1 RE-REVISE): `reReviseUsed` records that the
+  // one permitted re-revise has been consumed. Once it is true — OR revisionLoopCount has
+  // reached 2 — the "Request Final Revision" control is ABSENT FROM THE DOM and the only
+  // forward exit is the final gate. (This field formally lives on PipelineState in P18.2;
+  // it is declared here as optional so the re-review route can enforce the cap before P18.)
+  reReviewReport?: ReviewerScoreSet         // Schema 6' — the narrow re-review (+ rrMatrix, scoreTrajectory, residualIssues)
+  reReviseUsed?: boolean                    // the single permitted RE-REVISE has been consumed (iron rule 2)
+  // Where the re-review UI is in its lifecycle. 'final-gate' is the handoff into P15.
+  reReviewStatus?: 'idle' | 'running' | 'awaiting-decision' | 'final-gate' | 'error'
+
+  // Residual coaching (Stage 3'→4', max 5 rounds). Kept in SEPARATE fields from the P12
+  // coaching block above so the first coaching thread is never clobbered. 'proceed-revision'
+  // is the handoff into the Stage-4' RE-REVISE (the revise route in re-revise mode).
+  residualCoachingThread?: CoachingMessage[]
+  residualCoachingRoundCount?: number       // bounded loop invariant (max 5 — FR-36)
+  residualCoachingStatus?: 'idle' | 'round-0' | 'in-progress' | 'cap-reached' | 'proceed-revision' | 'error'
 }
 
 // ── P12: one turn of the EIC Socratic coaching dialogue ──
@@ -351,7 +378,24 @@ export interface ScoreTrajectoryEntry {
   dimension: string
   stage3: number
   stage3Prime: number
-  delta: number
+  delta: number              // stage3Prime - stage3 (negative = the score dropped)
+}
+
+// ── P14: Stage 3' (Re-Review) — R&R Traceability Matrix ──
+// How well a single original reviewer comment was addressed by the revision. The
+// re-review agent assigns one of these per original comment so the author can see,
+// at a glance, which reviewer concerns the revision actually closed.
+export type RRResolutionStatus = 'Resolved' | 'Partially Resolved' | 'Unresolved'
+
+// One row of the Revise-and-Resubmit Traceability Matrix: an original reviewer
+// comment, what the revision did about it, and the re-reviewer's resolution verdict.
+export interface RRMatrixRow {
+  id: string
+  comment: string             // the original Stage-3 reviewer comment / required change
+  revision: string            // what the revision did to address it
+  status: RRResolutionStatus  // the re-reviewer's verdict on how well it was resolved
+  reviewer?: string           // which Stage-3 reviewer raised it (role string)
+  targetSection?: string      // which paper section it touches
 }
 
 // The whole Schema-6 Review Report — the bundled output of Phase 2.
@@ -363,7 +407,9 @@ export interface ReviewerScoreSet {
   confidenceScore: number              // 0-100
   daCritical: boolean                  // true if the Devil's Advocate raised a critical flag
   revisionRoadmap?: RoadmapItem[]      // Schema-7 items embedded in the report (leniently parsed in P11; full parser is P13)
-  scoreTrajectory?: ScoreTrajectoryEntry[]  // only present at Stage 3' (P14)
+  scoreTrajectory?: ScoreTrajectoryEntry[]  // only present at Stage 3' (P14) — computed in software vs Stage 3
+  rrMatrix?: RRMatrixRow[]             // only present at Stage 3' (P14) — the R&R Traceability Matrix
+  residualIssues?: string[]            // only present at Stage 3' (P14) — issues the re-review still flags
 }
 
 // A lightweight Schema-7 revision item. The FULL Schema-7 parser arrives in P13;

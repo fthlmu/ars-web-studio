@@ -1,31 +1,23 @@
 'use client'
 
-// Stage-4 Revision page (Phase P13) — the revision_coach_agent executor.
+// Revision page — the revision_coach_agent executor. Serves TWO stages:
 //
-// Reached from the P12 coaching 'proceed-revision' handoff. The revision agent rewrites
-// the paper against the reviewers' report + roadmap + coaching dialogue, and this page
-// shows the Revision Roadmap checklist + the before→after Delta Report, then routes by
-// the revision-loop count (FR-05 / FR-33).
+//   • P13 — Stage 4 REVISE (default): reached from the P12 coaching 'proceed-revision'
+//     handoff. Revises the ORIGINAL draft against the Stage-3 review + roadmap + coaching.
+//     On Approve: increment revisionLoopCount; <2 → re-review (Stage 3'), ==2 → final gate.
+//
+//   • P14 — Stage 4' RE-REVISE (?stage=re-revise): the SINGLE permitted final revision.
+//     Reached from the residual-coaching 'proceed-revision' handoff. Revises the
+//     already-revised draft against the RE-REVIEW report + residual coaching. On Approve:
+//     increment revisionLoopCount to the cap AND set reReviseUsed = true, then return to
+//     re-review (whose only remaining exit is the final gate — iron rule 2).
 //
 // IRON RULES enforced here:
-//   • P13.7 — the ORIGINAL draft (paper.sections) is NEVER overwritten. The revised draft
-//     lands in paper.revisedDraft as a SEPARATE field, so a failed/abandoned revision
-//     leaves the source intact and EH-04 "Retry Revision" preserves Schema 4 + Schema 6.
-//   • FR-05 / FR-33 — on Approve we increment revisionLoopCount; <2 routes to re-review
-//     (Stage 3', P14), ==2 routes to the final integrity gate (Stage 4.5, P15). There is
-//     NO third revision loop — a paper already on its final loop (revisionLoopCount===1)
-//     shows a persistent orange banner saying the next stop is the final gate.
-//
-// State machine (mirrors the P11 review / P12 coaching pages deliberately):
-//   loading           → read saved paper; decide whether this page is even legal
-//   running           → runRevision() streaming the rewrite
-//   awaiting-approval → roadmap + delta shown; the human clicks Approve (no auto-advance)
-//   routed            → approved; record the FR-05/33 handoff + name the next phase.
-//                       P14 (re-review) / P15 (final gate) are not built yet, so — exactly
-//                       like review/coaching handled "next stage not built" — we record the
-//                       decision + name the phase rather than navigating to a dead route.
-//   error             → runRevision THREW (API/parse); EH-04 Retry re-runs it, preserving
-//                       the review report + the (untouched) original draft.
+//   • P13.7 — the ORIGINAL editor draft (paper.sections) is NEVER overwritten. Revised
+//     content lands in paper.revisedDraft as a SEPARATE field. (In re-revise the *previous*
+//     revisedDraft is the "before"; sections still stay pristine.)
+//   • FR-05 / FR-33 / iron rule 2 — the loop counter + reReviseUsed gate the next stage.
+//     A re-revise can happen at most ONCE (the re-revise mount bounces if reReviseUsed).
 
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
@@ -37,6 +29,8 @@ import { loadPaper, savePaper, loadModelConfig } from '@/lib/storage'
 import type { PaperState, ModelConfig } from '@/lib/types'
 
 type Phase = 'loading' | 'running' | 'awaiting-approval' | 'routed' | 'error'
+// Which stage this revise screen is serving (selected from the URL on mount).
+type Mode = 'p13' | 're-revise'
 
 // The max number of revision loops (FR-05). Reaching it forces the final gate.
 const MAX_REVISION_LOOPS = 2
@@ -46,13 +40,14 @@ export default function RevisePage() {
 
   const [paper, setPaper] = useState<PaperState | null>(null)
   const [phase, setPhase] = useState<Phase>('loading')
+  const [mode, setMode] = useState<Mode>('p13')
   const [streamingText, setStreamingText] = useState('')
-  // Error banner text — set ONLY when runRevision throws (EH-04). Drives the Retry state.
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
 
   // refs (avoid stale closures inside async callbacks; mirror the review page).
   const isRunningRef = useRef(false)
   const paperRef = useRef<PaperState | null>(null)
+  const modeRef = useRef<Mode>('p13')
   const modelConfigRef = useRef<ModelConfig | undefined>(undefined)
 
   // ── Persist helper (immutable update + localStorage write) — copied from review/coaching. ──
@@ -65,11 +60,19 @@ export default function RevisePage() {
     savePaper(next)
   }, [])
 
-  // ── Run the revision. The ORIGINAL draft is built fresh from the editor sections and
-  // passed read-only; runRevision returns a NEW revisedDraft (P13.7 — never overwrite). ──
+  // ── Run the revision. The inputs differ by stage:
+  //   p13:        original = the pristine editor draft; review = Stage-3 report; coaching = P12 thread
+  //   re-revise:  original = the prior revised draft;   review = re-review report; coaching = residual thread
+  // Either way runRevision returns a NEW revisedDraft (never mutates the "before"). ──
   const run = useCallback(async () => {
     if (isRunningRef.current) return
-    if (!paperRef.current || !paperRef.current.reviewReport) return
+    const p = paperRef.current
+    if (!p) return
+    const m = modeRef.current
+    // Pick the review report + "before" draft + coaching thread for this stage.
+    const review = m === 're-revise' ? p.reReviewReport : p.reviewReport
+    if (!review) return
+    if (m === 're-revise' && !p.revisedDraft) return
     isRunningRef.current = true
 
     setErrorMessage(null)
@@ -78,18 +81,19 @@ export default function RevisePage() {
     persist((prev) => ({ ...prev, revisionStatus: 'running' }))
 
     try {
-      const original = buildPaperDraft(paperRef.current)
+      // In re-revise the "before" is the prior revised draft; in p13 it is the editor draft.
+      // (The re-revise guard above already ensured p.revisedDraft is present.)
+      const original = m === 're-revise' && p.revisedDraft ? p.revisedDraft : buildPaperDraft(p)
+      const coaching = m === 're-revise' ? (p.residualCoachingThread ?? []) : (p.coachingThread ?? [])
       const result = await runRevision(
-        paperRef.current.config,
+        p.config,
         original,
-        paperRef.current.reviewReport,
-        paperRef.current.coachingThread ?? [],
+        review,
+        coaching,
         (chunk) => setStreamingText((prev) => prev + chunk),
         modelConfigRef.current,
       )
 
-      // Success: store the roadmap + revised draft + delta SEPARATELY (sections untouched),
-      // flip to awaiting-approval, and persist so a reload restores without re-paying.
       persist((prev) => ({
         ...prev,
         revisionPlan: result.roadmap,
@@ -99,8 +103,6 @@ export default function RevisePage() {
       }))
       setPhase('awaiting-approval')
     } catch (err) {
-      // EH-04: a THROWN error means the revision could not complete. Retry re-runs it; the
-      // review report + the original draft are preserved (we never touched paper.sections).
       const msg = err instanceof Error ? err.message : String(err)
       setErrorMessage(msg)
       setPhase('error')
@@ -112,9 +114,15 @@ export default function RevisePage() {
     }
   }, [persist])
 
-  // ── Mount: load paper, enforce the coaching-handoff precondition, then run. ──
+  // ── Mount: read the stage param, load paper, enforce the handoff precondition, then run. ──
   useEffect(() => {
     if (paperRef.current !== null) return
+
+    const stageParam =
+      typeof window !== 'undefined'
+        ? new URLSearchParams(window.location.search).get('stage')
+        : null
+    const m: Mode = stageParam === 're-revise' ? 're-revise' : 'p13'
 
     const saved = loadPaper()
     if (!saved) {
@@ -122,27 +130,46 @@ export default function RevisePage() {
       return
     }
 
-    // Revision is legal ONLY after a "Request Revision" review decision with a report.
-    if (!saved.reviewReport) {
-      router.replace('/pipeline/review')
-      return
-    }
-    // …and only once coaching has handed off (Skip / cap / Proceed all set this).
-    const isRevision =
-      saved.reviewDecision === 'Minor Revision' || saved.reviewDecision === 'Major Revision'
-    if (!isRevision || saved.coachingStatus !== 'proceed-revision') {
-      router.replace('/pipeline/coaching')
-      return
+    if (m === 're-revise') {
+      // IRON RULE 2: the single permitted re-revise can run at most ONCE. If it has already
+      // been used, there is no second re-revise — bounce back to the re-review (final gate only).
+      if (saved.reReviseUsed === true) {
+        router.replace('/pipeline/re-review')
+        return
+      }
+      // Re-revise is legal only with a re-review report + a revised draft to revise…
+      if (!saved.reReviewReport || !saved.revisedDraft) {
+        router.replace('/pipeline/re-review')
+        return
+      }
+      // …and only once residual coaching has handed off.
+      if (saved.residualCoachingStatus !== 'proceed-revision') {
+        router.replace('/pipeline/coaching?stage=re-review')
+        return
+      }
+    } else {
+      // P13: legal only after a "Request Revision" decision with a report…
+      if (!saved.reviewReport) {
+        router.replace('/pipeline/review')
+        return
+      }
+      const isRevision =
+        saved.reviewDecision === 'Minor Revision' || saved.reviewDecision === 'Major Revision'
+      // …and only once coaching has handed off (Skip / cap / Proceed all set this).
+      if (!isRevision || saved.coachingStatus !== 'proceed-revision') {
+        router.replace('/pipeline/coaching')
+        return
+      }
     }
 
     paperRef.current = saved
+    modeRef.current = m
     modelConfigRef.current = loadModelConfig()
 
     queueMicrotask(() => {
+      setMode(m)
       setPaper(saved)
-      // Returning to the page: show whatever state was saved rather than re-running the
-      // (paid) revision. 'routed' if already approved; 'awaiting-approval' if the revision
-      // ran but wasn't approved; otherwise start a fresh run.
+      // Returning to the page: show saved state rather than re-running the (paid) revision.
       if (saved.revisionStatus === 're-review' || saved.revisionStatus === 'final-gate') {
         setPhase('routed')
       } else if (
@@ -159,18 +186,30 @@ export default function RevisePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── Approve the revision (P13.6): increment the loop counter and route by FR-05/33. ──
+  // ── Approve the revision. Routing differs by stage. ──
   const approve = useCallback(() => {
-    if (!paperRef.current) return
-    const newCount = (paperRef.current.revisionLoopCount ?? 0) + 1
-    // <2 → re-review (Stage 3', P14); ==2 (cap reached) → final integrity gate (Stage 4.5, P15).
+    const p = paperRef.current
+    if (!p) return
+    if (modeRef.current === 're-revise') {
+      // Stage 4' RE-REVISE: consume the final loop AND mark the single re-revise as used,
+      // then return to re-review with a fresh re-review run (its only exit is the final gate).
+      persist((prev) => ({
+        ...prev,
+        revisionLoopCount: MAX_REVISION_LOOPS,
+        reReviseUsed: true,
+        revisionStatus: 're-review',
+        // Clear the prior re-review so the re-review page re-scores the re-revised draft.
+        reReviewReport: undefined,
+        reReviewStatus: 'idle',
+      }))
+      setPhase('routed')
+      return
+    }
+    // P13: increment the loop counter and route by FR-05/33.
+    const newCount = (p.revisionLoopCount ?? 0) + 1
     const route: PaperState['revisionStatus'] =
       newCount < MAX_REVISION_LOOPS ? 're-review' : 'final-gate'
-    persist((prev) => ({
-      ...prev,
-      revisionLoopCount: newCount,
-      revisionStatus: route,
-    }))
+    persist((prev) => ({ ...prev, revisionLoopCount: newCount, revisionStatus: route }))
     setPhase('routed')
   }, [persist])
 
@@ -184,10 +223,11 @@ export default function RevisePage() {
     )
   }
 
-  // FR-33: this is the FINAL permitted loop when one loop has already been consumed.
-  // After approving here, revisionLoopCount reaches the cap and the next stop is the
-  // final gate — there is no further review loop. Shown persistently while on this page.
-  const isFinalLoop = (paper.revisionLoopCount ?? 0) === MAX_REVISION_LOOPS - 1
+  const isReRevise = mode === 're-revise'
+  // FR-33: in P13 this is the FINAL permitted loop when one loop is already consumed.
+  // A re-revise is ALWAYS the final loop. Either way, the next stop after approve is
+  // the re-review (whose only forward exit is then the final gate).
+  const isFinalLoop = isReRevise || (paper.revisionLoopCount ?? 0) === MAX_REVISION_LOOPS - 1
 
   return (
     <div className="min-h-screen bg-background">
@@ -197,33 +237,35 @@ export default function RevisePage() {
         <div>
           <h1 className="text-2xl font-bold mb-1 truncate">{paper.config.topic}</h1>
           <p className="text-sm text-muted-foreground">
-            Stage 4 — Revision ·{' '}
+            {isReRevise ? 'Stage 4′ — Final Revision' : 'Stage 4 — Revision'} ·{' '}
             {paper.config.paperType.replace('_', ' ').toUpperCase()} ·{' '}
-            Decision: {paper.reviewDecision}
+            {isReRevise ? 'Re-revise (1 of 1)' : `Decision: ${paper.reviewDecision}`}
           </p>
         </div>
 
-        {/* ── FR-33 final-loop banner: persistent orange warning on the last permitted loop. ── */}
+        {/* ── Final-loop banner: persistent orange warning on the last permitted loop. ── */}
         {isFinalLoop && phase !== 'routed' && (
           <div
             role="status"
             data-testid="final-loop-banner"
             className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-200"
           >
-            <span className="font-semibold">Final revision loop.</span> One revision loop has
-            already been used. After you approve this revision, the paper advances straight to the
-            zero-tolerance Final Integrity Gate (Stage 4.5) — there is no further review loop.
+            <span className="font-semibold">
+              {isReRevise ? 'Single permitted final revision.' : 'Final revision loop.'}
+            </span>{' '}
+            {isReRevise
+              ? 'This is the one re-revise allowed. After you approve it, the re-review’s only remaining exit is the zero-tolerance Final Integrity Gate (Stage 4.5).'
+              : 'One revision loop has already been used. After you approve this revision, the next re-review’s only remaining exit is the zero-tolerance Final Integrity Gate (Stage 4.5).'}
           </div>
         )}
 
-        {/* ── ERROR (EH-04): the revision could not complete. Retry re-runs it; the review
-            report and the original draft are preserved (sections were never touched). ── */}
+        {/* ── ERROR (EH-04): the revision could not complete. ── */}
         {phase === 'error' && (
           <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 p-5 space-y-3">
             <p className="font-semibold text-destructive">Revision failed to complete. Retry?</p>
             {errorMessage && <p className="text-sm text-muted-foreground">{errorMessage}</p>}
             <p className="text-xs text-muted-foreground">
-              Your peer-review report and original draft are preserved — retrying re-runs only the rewrite.
+              Your review report and source draft are preserved — retrying re-runs only the rewrite.
             </p>
             <div className="flex flex-col gap-2 sm:flex-row">
               <Button data-testid="revision-retry" onClick={() => run()}>Retry revision</Button>
@@ -235,7 +277,11 @@ export default function RevisePage() {
         {/* ── RUNNING: the agent rewrites the paper. ── */}
         {phase === 'running' && (
           <div className="space-y-4">
-            <p className="text-sm font-medium">Revising the paper against the reviewers’ roadmap…</p>
+            <p className="text-sm font-medium">
+              {isReRevise
+                ? 'Making the final revision against the re-review’s residual issues…'
+                : 'Revising the paper against the reviewers’ roadmap…'}
+            </p>
             <div
               aria-live="polite"
               aria-busy="true"
@@ -256,22 +302,24 @@ export default function RevisePage() {
               <div>
                 <p className="font-semibold">Approve this revision?</p>
                 <p className="text-sm text-muted-foreground">
-                  {isFinalLoop
-                    ? 'Approving advances the paper to the Final Integrity Gate (Stage 4.5) — no further review loop.'
-                    : 'Approving sends the revised paper back for a re-review (Stage 3′).'}
+                  {isReRevise
+                    ? 'Approving sends the re-revised paper back for a final re-review; after that the only exit is the Final Integrity Gate (Stage 4.5).'
+                    : isFinalLoop
+                      ? 'Approving sends the revised paper for a re-review; after that the only exit is the Final Integrity Gate (Stage 4.5).'
+                      : 'Approving sends the revised paper back for a re-review (Stage 3′).'}
                 </p>
               </div>
               <Button data-testid="revision-approve" onClick={approve}>
-                {isFinalLoop
-                  ? 'Approve Revision — Advance to Final Integrity Gate'
+                {isReRevise
+                  ? 'Approve Final Revision — Send for Re-Review'
                   : 'Approve Revision — Send for Re-Review'}
               </Button>
             </div>
           </div>
         )}
 
-        {/* ── ROUTED: record the FR-05/33 handoff + name the next phase (P14/P15 not built
-            yet, so we do NOT navigate to a non-existent route — mirrors review/coaching). ── */}
+        {/* ── ROUTED: re-review IS built (P14), so navigate there. The final-gate handoff
+            (P13 loop 2) still only NAMES Stage 4.5 — P15 is not built yet. ── */}
         {phase === 'routed' && (
           <div
             role="status"
@@ -280,12 +328,22 @@ export default function RevisePage() {
             {paper.revisionStatus === 're-review' && (
               <>
                 <p className="font-semibold text-green-800 dark:text-green-200">
-                  Revision approved — advancing to Re-Review (Stage 3′)
+                  {isReRevise
+                    ? 'Final revision approved — returning to re-review'
+                    : 'Revision approved — advancing to Re-Review (Stage 3′)'}
                 </p>
                 <p className="text-sm text-green-700 dark:text-green-300">
-                  Revision loop {paper.revisionLoopCount ?? 1} of {MAX_REVISION_LOOPS}. The narrow
-                  3-agent re-review (Stage 3′) is built in P14; your revised draft and Delta Report are saved.
+                  Revision loop {Math.min(paper.revisionLoopCount ?? 1, MAX_REVISION_LOOPS)} of {MAX_REVISION_LOOPS}.
+                  {isReRevise
+                    ? ' The re-review will re-score the re-revised paper; its only remaining exit is the final gate.'
+                    : ' The narrow 3-agent re-review re-scores your revised draft.'}
                 </p>
+                <div className="flex flex-col items-start gap-2 sm:flex-row">
+                  <Button data-testid="enter-re-review" onClick={() => router.push('/pipeline/re-review')}>
+                    {isReRevise ? 'Return to Re-Review →' : 'Enter Re-Review →'}
+                  </Button>
+                  <Button variant="outline" onClick={() => router.push('/pipeline')}>Back to pipeline</Button>
+                </div>
               </>
             )}
             {paper.revisionStatus === 'final-gate' && (
@@ -298,11 +356,11 @@ export default function RevisePage() {
                   further review loop. The zero-tolerance final integrity gate is built in P15; your
                   revised draft is saved.
                 </p>
+                <div className="flex flex-col items-start gap-2 sm:flex-row">
+                  <Button variant="outline" onClick={() => router.push('/pipeline')}>Back to pipeline</Button>
+                </div>
               </>
             )}
-            <div className="flex flex-col items-start gap-2 sm:flex-row">
-              <Button variant="outline" onClick={() => router.push('/pipeline')}>Back to pipeline</Button>
-            </div>
           </div>
         )}
 
