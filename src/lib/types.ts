@@ -84,6 +84,28 @@ export interface PaperState {
   // Where the review UI is in its two-phase lifecycle. Mirrors integrityStatus above.
   reviewStatus?: 'idle' | 'running-phase1' | 'running-phase2' | 'awaiting-decision' | 'accepted' | 'revision' | 'rejected' | 'error'
   revisionLoopCount?: number                // incremented on a Reject (P11.9); formally finalized in P13/P18
+
+  // ── P12: Stage 3→4 (Coaching Loop) state ──
+  // Same DR-01 back-compat rule as the P9/P10/P11 blocks above: ALL optional, so a
+  // paper saved under P0–P11 (which never ran coaching) still loads cleanly — an old
+  // save just has none of these and the app treats coaching as "not started yet".
+  // Entered from the P11 review "Request Revision" decision; exits (Skip / cap-reached /
+  // user Proceed) into the Stage-4 revision executor built in P13.
+  coachingThread?: CoachingMessage[]        // the full EIC↔author dialogue, persisted verbatim (reload-safe)
+  coachingRoundCount?: number               // completed author replies; bounded loop invariant (max 8 — FR-28)
+  // Where the coaching UI is in its lifecycle. 'proceed-revision' is the handoff into
+  // the P13 Stage-4 revision executor (Skip, cap-reached, or a user Proceed all land here).
+  coachingStatus?: 'idle' | 'round-0' | 'in-progress' | 'cap-reached' | 'proceed-revision' | 'error'
+}
+
+// ── P12: one turn of the EIC Socratic coaching dialogue ──
+// role 'eic' is the Editor-in-Chief coach (assistant); 'user' is the author. Persisted
+// inside PaperState.coachingThread so a mid-coaching reload restores the thread verbatim
+// (EH-07). Mirrors the ChatMessage shape used by the Quick Tools interactive runner, but
+// labelled for this stage so the reviewer (P14) thread can reuse the same component.
+export interface CoachingMessage {
+  role: 'eic' | 'user'
+  content: string
 }
 
 // ── P8: Multi-model adapter ──

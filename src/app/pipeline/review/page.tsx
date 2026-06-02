@@ -425,8 +425,8 @@ export default function ReviewPage() {
                   Request Revision ({paper.reviewDecision}) — entering coaching
                 </p>
                 <p className="text-sm text-green-700 dark:text-green-300">
-                  The EIC Socratic coaching loop (Stage 3→4) is built in P12; your decision
-                  is recorded.
+                  The EIC Socratic coaching loop (Stage 3→4) will walk you through the
+                  revision before the paper is rewritten.
                 </p>
               </>
             )}
@@ -442,6 +442,15 @@ export default function ReviewPage() {
               </>
             )}
             <div className="flex flex-col items-start gap-2 sm:flex-row">
+              {/* Revision decisions now navigate into the live P12 coaching loop. */}
+              {(paper.reviewDecision === 'Minor Revision' || paper.reviewDecision === 'Major Revision') && (
+                <Button
+                  data-testid="enter-coaching"
+                  onClick={() => router.push('/pipeline/coaching')}
+                >
+                  Enter Coaching →
+                </Button>
+              )}
               <Button variant="outline" onClick={() => router.push('/pipeline')}>
                 Back to pipeline
               </Button>

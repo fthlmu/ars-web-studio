@@ -59,6 +59,8 @@ import type {
   // 5-reviewer review report (Schema 6) produced by the two-phase Sprint Contract.
   ScoringPlan,
   ReviewerScoreSet,
+  // P12 Stage 3→4 (Coaching): the advisory revision roadmap items the EIC coaches against.
+  RoadmapItem,
 } from './types'
 
 // ─── Core streaming primitive ────────────────────────────────────────────────
@@ -1269,4 +1271,99 @@ ${CONTRACT_REVIEW}
     // Network / server / non-handoff failure (incl. an IR-03 403) — surface to the caller.
     throw err
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P12: STAGE 3→4 — EIC SOCRATIC COACHING
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// After a "Request Revision" review decision, the Editor-in-Chief coaches the
+// author through the revision BEFORE the Stage-4 executor rewrites anything.
+// Think of it like a design review with your advisor: instead of handing you the
+// fixed layout, they ask the pointed questions that make YOU see what to change —
+// so you understand the revision, not just receive it.
+//
+// There is no dedicated Socratic-coach agent in the ARS bundle (revision_coach is
+// the Stage-4 EXECUTOR — it parses comments into a roadmap and rewrites; it is
+// bundled + used in P13). So, per the plan's fallback, coaching is driven from the
+// Schema 6/7 context with a short EIC system prompt defined here.
+//
+// Transport is a real multi-turn dialogue over /api/coaching (see lib/coaching.ts),
+// NOT callAgent — coaching is a back-and-forth, not a one-shot. This module only
+// supplies (1) the system prompt and (2) the seed message that opens the dialogue.
+
+/**
+ * The EIC Socratic coaching system prompt. Short and self-contained (the plan's
+ * fallback when no dedicated coach agent exists). The model plays the Editor-in-Chief
+ * coaching the author through their revision via focused Socratic questions.
+ */
+export const COACHING_SYSTEM_PROMPT = `You are the Editor-in-Chief (EIC) of an academic journal, coaching an author through the revision of their paper after a peer-review "Request Revision" decision.
+
+Your method is SOCRATIC. You do not rewrite the paper and you do not hand the author finished fixes. Instead you ask pointed, one-at-a-time questions that lead the author to discover what must change and why — grounding every question in the reviewers' report and the revision roadmap you are given.
+
+Rules for every turn:
+- Ask ONE focused question or raise ONE concrete issue per turn. Never dump a checklist.
+- Tie each question to a specific reviewer concern or roadmap item (name it).
+- Prioritise the must_fix items first, then should_fix, then consider.
+- Acknowledge the author's answer briefly, then move them forward.
+- Keep each turn short (a few sentences). This is a dialogue, not an essay.
+- You are coaching, not approving: do not declare the paper accepted or finished.
+- The coaching loop is bounded (the author may end it and proceed to revision at any time). When you sense the author understands the key fixes, say so and suggest they proceed to the revision step.`
+
+/**
+ * Builds the SEED message that opens the coaching dialogue. This is the FIRST
+ * user-role turn: it hands the EIC the paper context, the editorial decision, the
+ * five reviewers' headline concerns, and the advisory revision roadmap, then asks
+ * the EIC to open with its first Socratic question. The author has not spoken yet —
+ * this message exists only to give the coach its grounding and elicit turn 1.
+ *
+ * @param config   - the Paper Configuration Record (topic, type, citation format)
+ * @param review   - the Schema-6 Review Report (5 reviewers + decision + consensus)
+ * @param roadmap  - the advisory Schema-7 roadmap items (may be empty)
+ * @returns        - the seed user message string
+ */
+export function buildCoachingSeed(
+  config: PaperConfig,
+  review: ReviewerScoreSet,
+  roadmap: RoadmapItem[]
+): string {
+  // Compact per-reviewer summary: role, overall score, and their required changes.
+  const reviewerLines = review.reviewers
+    .map((r) => {
+      const changes =
+        r.requiredChanges.length > 0
+          ? r.requiredChanges.map((c) => `      - ${c}`).join('\n')
+          : '      - (no specific required changes)'
+      return `  ${r.role} (overall ${r.overallScore}/100, recommends ${r.recommendation}):\n${changes}`
+    })
+    .join('\n')
+
+  // The roadmap, leading with must_fix so the coach opens on the highest-priority issue.
+  const roadmapLines =
+    roadmap.length > 0
+      ? roadmap
+          .map(
+            (item) =>
+              `  - [${item.priority}] ${item.description}` +
+              (item.targetSection ? ` (section: ${item.targetSection})` : '')
+          )
+          .join('\n')
+      : '  (no structured roadmap was provided — coach from the reviewer concerns above)'
+
+  return `
+A paper has received a "${review.editorialDecision}" decision (consensus: ${review.consensus}) in peer review and now enters the revision-coaching step. Coach the author through the revision.
+
+## Paper
+- Topic: ${config.topic}
+- Type: ${config.paperType}
+- Citation format: ${config.citationFormat}
+
+## Reviewer concerns (Schema 6)
+${reviewerLines}
+
+## Revision roadmap (advisory, Schema 7)
+${roadmapLines}
+
+Open the coaching dialogue now: greet the author briefly, then ask your FIRST Socratic question about the single highest-priority issue. One question only.
+`.trim()
 }
