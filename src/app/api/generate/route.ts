@@ -21,7 +21,40 @@ interface GenerateRequest {
   // optional: research-stage progress info ("Agent N of 5"). When present and well-formed,
   // we echo it back once as a 'progress' SSE frame so the client can show step status.
   progressMeta?: { agentName: string; completed: number; total: number }
+  // ── P11 IR-03: data-access guard fields (all optional — pre-P11 callers omit them) ──
+  // dataAccessLevel labels what the calling agent is ALLOWED to see:
+  //   'raw'           — may read raw, un-verified material (default for most agents)
+  //   'verified_only' — must NOT run until the paper has reached a verified stage
+  // agentId / pipelineStatus let the server decide whether a verified_only agent is
+  // being called at a LEGAL point in the pipeline (see the IR-03 guard in POST).
+  dataAccessLevel?: 'raw' | 'verified_only'
+  agentId?: string
+  pipelineStatus?: string
 }
+
+// ── P11 IR-03 (Iron Rule 03): a 'verified_only' agent may run ONLY once the paper
+// has reached a stage where verified material exists. This is the editorial-board
+// rule made mechanical: a peer reviewer / coach / reviser must never see (or score)
+// a draft that has not yet been through the integrity gate.
+//
+// VERIFIED_ONLY_OK is the set of pipelineStatus values where a verified_only consumer
+// is legally allowed to run (everything from peer review onward through finalize).
+const VERIFIED_ONLY_OK = new Set<string>([
+  'running-peer-review',
+  'awaiting-review-decision',
+  'running-coaching',
+  'running-revision',
+  'running-re-review',
+  'running-final-gate',
+  'running-finalize',
+])
+
+// The integrity verification agent is the EXEMPTION: it is itself verified_only, yet it
+// is the agent that TURNS a raw draft INTO verified material. Blocking it before its own
+// stage would be a chicken-and-egg deadlock (nothing could ever become verified). So it is
+// always allowed to run — including at running-integrity-gate (Stage 2.5) and
+// running-final-gate (Stage 4.5), which are NOT in VERIFIED_ONLY_OK.
+const INTEGRITY_AGENT_EXEMPT = 'integrity_verification_agent'
 
 // Type guard: is this value a well-formed progressMeta object?
 // Like a parity check on an incoming packet — if any field is the wrong type, reject it.
@@ -115,6 +148,30 @@ export async function POST(req: NextRequest) {
           { status: 500, headers: { 'Content-Type': 'application/json' } }
         )
       }
+    }
+
+    // ── P11 IR-03 guard: refuse a verified_only agent at an illegal stage ────────
+    // If the caller declares itself verified_only, it may only run when:
+    //   (a) it is the integrity verification agent (the EXEMPTION — it creates verified
+    //       material, so it must be allowed even at running-integrity-gate / running-final-gate), OR
+    //   (b) the current pipelineStatus is one of the legal post-integrity stages.
+    // Otherwise we reject with 403 — the agent is trying to read/score material before
+    // the integrity gate has produced any verified content. A 'raw' caller (the default)
+    // skips this entirely, so all pre-P11 callers are unaffected.
+    if (
+      body.dataAccessLevel === 'verified_only' &&
+      body.agentId !== INTEGRITY_AGENT_EXEMPT &&
+      !VERIFIED_ONLY_OK.has(body.pipelineStatus ?? '')
+    ) {
+      return new Response(
+        JSON.stringify({
+          error:
+            'IR-03: verified_only agent called before its legal stage (pipelineStatus=' +
+            (body.pipelineStatus ?? 'unknown') +
+            ')',
+        }),
+        { status: 403, headers: { 'Content-Type': 'application/json' } }
+      )
     }
 
     // One encoder shared by both provider branches below.

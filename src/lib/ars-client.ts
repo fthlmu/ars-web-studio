@@ -16,6 +16,8 @@ import {
   ABSTRACT_BILINGUAL_PROMPT,
   // P10 Stage 2.5: the integrity-gate agent prompt (reused at Stage 4.5 in P15).
   INTEGRITY_VERIFICATION_PROMPT,
+  // P11 Stage 3: the bundled peer-reviewer prompt (reused, NOT re-bundled).
+  PEER_REVIEWER_PROMPT,
 } from './ars-agents'
 // P9: the 5 deep-research agent prompts that make up the Stage-1 research chain.
 // (This module is created by the deep-research agent in parallel; same path/names.)
@@ -28,7 +30,16 @@ import {
 } from './ars-agents/deep-research'
 // P9: the JSON handoff parsers + the error they throw when a field is missing.
 // P10 adds parseSchema5 (the integrity report parser).
-import { parseSchema1, parseSchema2, parseSchema3, parseSchema5, HandoffIncompleteError } from './schemas'
+// P11 adds parseSchema6 (Review Report) + parseSchema13 (paper-blind Scoring Plan).
+import {
+  parseSchema1,
+  parseSchema2,
+  parseSchema3,
+  parseSchema5,
+  parseSchema6,
+  parseSchema13,
+  HandoffIncompleteError,
+} from './schemas'
 import type {
   PaperConfig,
   Section,
@@ -44,6 +55,10 @@ import type {
   PaperDraft,
   DraftSection,
   IntegrityReport,
+  // P11 Stage 3 (Review): the paper-blind scoring plan (Schema 13) and the
+  // 5-reviewer review report (Schema 6) produced by the two-phase Sprint Contract.
+  ScoringPlan,
+  ReviewerScoreSet,
 } from './types'
 
 // ─── Core streaming primitive ────────────────────────────────────────────────
@@ -57,6 +72,12 @@ import type {
 export interface CallAgentOptions {
   onProgress?: (p: ResearchProgress) => void
   progressMeta?: ResearchProgress
+  // P11 IR-03: optional data-access metadata. When set, it is forwarded to the
+  // server's IR-03 guard, which can 403 a verified_only agent called before its
+  // legal stage. Existing callers omit this, so the fields arrive undefined and the
+  // guard is skipped (back-compat). dataAccessLevel labels what the agent may see;
+  // agentId + pipelineStatus tell the server whether this is a legal call point.
+  access?: { dataAccessLevel: 'raw' | 'verified_only'; agentId: string; pipelineStatus: string }
 }
 
 /**
@@ -80,7 +101,17 @@ export async function callAgent(
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     // progressMeta is forwarded so the server can echo a 'progress' SSE frame (IR-04).
-    body: JSON.stringify({ agentPrompt, userMessage, modelConfig, progressMeta: opts?.progressMeta }),
+    // P11 IR-03: the access fields (when present) let the server reject a verified_only
+    // agent called before its legal stage. Absent => undefined => guard skipped.
+    body: JSON.stringify({
+      agentPrompt,
+      userMessage,
+      modelConfig,
+      progressMeta: opts?.progressMeta,
+      dataAccessLevel: opts?.access?.dataAccessLevel,
+      agentId: opts?.access?.agentId,
+      pipelineStatus: opts?.access?.pipelineStatus,
+    }),
   })
 
   if (!response.ok) {
@@ -1022,4 +1053,220 @@ ${CONTRACT_INTEGRITY}
   }
 
   return report
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P11: STAGE 3 — REVIEW ORCHESTRATION (two-phase Sprint Contract)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Stage 3 runs peer review as a TWO-PHASE Sprint Contract — like calibrating a
+// measurement rig BEFORE connecting the device under test, so the test plan can't
+// be bent to flatter the result:
+//
+//   Phase 1 (PAPER-BLIND):  the editorial board pre-commits a scoring plan
+//                           (Schema 13) WITHOUT seeing any draft content — only
+//                           the config/title/metadata + the dimension list. This
+//                           locks in "what good looks like" before the paper can
+//                           influence the rubric.  → runReviewPhase1 → ScoringPlan
+//
+//   Phase 2 (PAPER-VISIBLE): the same board, now holding the committed plan,
+//                            reads the full draft and scores it against the
+//                            pre-committed rubric, emitting the 5-reviewer Review
+//                            Report (Schema 6).      → runReviewPhase2 → ReviewerScoreSet
+//
+// The two are INDEPENDENT exported functions on purpose (FR-22 / EH-03): if Phase 2
+// fails to parse, the page can retry Phase 2 ALONE against the already-committed
+// plan — it must never silently re-run Phase 1 (that would discard the blind
+// pre-commitment and defeat the whole point). Each function does one call = one
+// parse attempt, retrying ONCE on HandoffIncompleteError then rethrowing — the
+// exact runOnce pattern runIntegrityGate uses.
+//
+// Both phases reuse PEER_REVIEWER_PROMPT (already bundled) and tag every call with
+// IR-03 access metadata { verified_only, peer_reviewer_agent, running-peer-review }
+// so the server's IR-03 guard confirms review only runs on a verified (2.5-PASS) paper.
+
+// IR-03 access tag shared by BOTH review phases. The peer reviewer is verified_only
+// (it must only see a paper that already cleared the integrity gate), and Stage 3
+// runs under the running-peer-review pipeline status — a legal point per VERIFIED_ONLY_OK.
+const REVIEW_ACCESS = {
+  dataAccessLevel: 'verified_only',
+  agentId: 'peer_reviewer_agent',
+  pipelineStatus: 'running-peer-review',
+} as const
+
+// The five rubric dimensions the board pre-commits to and later scores against.
+// One definition, used in BOTH the Phase-1 plan contract and (implicitly) Phase 2.
+const REVIEW_DIMENSIONS = ['Novelty', 'Methodology', 'Clarity', 'Contribution', 'Citation'] as const
+
+// ─── Phase-1 output contract: the paper-blind Scoring Plan (Schema 13) ──────────
+//
+// Mirrors the CONTRACT_* pattern. Phase 1 is PAPER-BLIND: this contract is appended
+// to a message that contains ONLY the config — never any section/draft content.
+const CONTRACT_SCORING_PLAN = `${OUTPUT_CONTRACT_INTRO}
+You are the Stage-3 editorial board PRE-COMMITTING a scoring plan BEFORE you have seen
+any of the paper's content. Commit, in advance, what you will look for on each of the five
+dimensions ${REVIEW_DIMENSIONS.join(', ')} — and what would trigger a blocking vs a warning
+score. Do NOT speculate about the paper's content; you have not read it yet.
+Required JSON shape (ScoringPlan — Schema 13):
+{
+  "sprintContractId": string,            // a unique id for this review contract
+  "committed": true,
+  "dimensions": [                        // EXACTLY one object per dimension below
+    { "dimensionId": string,             // one of: ${REVIEW_DIMENSIONS.join(', ')}
+      "whatToLookFor": string,           // the rubric criterion committed in advance
+      "whatTriggersBlock": string,       // what would force a low/blocking score
+      "whatTriggersWarn": string }       // what would warrant a warning
+  ]
+}`
+
+// ─── Phase-2 output contract: the 5-reviewer Review Report (Schema 6) ───────────
+//
+// Phase 2 is PAPER-VISIBLE: the message carries the config + the committed Phase-1
+// plan + the full draft. The board MUST score against the pre-committed plan.
+const CONTRACT_REVIEW = `${OUTPUT_CONTRACT_INTRO}
+You are a 5-reviewer editorial panel scoring the paper AGAINST the pre-committed scoring
+plan above. The five roles are EIC (Editor-in-Chief), R1, R2, R3 (referees), and DA
+(Devil's Advocate). Emit EXACTLY one reviewer object per role (5 total), each scoring all
+five dimensions (novelty, methodology, clarity, contribution, citation) and an overall
+score, all on a 0-100 scale.
+Decision thresholds (overall 0-100): >= 80 Accept, 65-79 Minor Revision, 50-64 Major
+Revision, < 50 Reject. A DA critical flag OVERRIDES a numeric pass — if the Devil's
+Advocate raises a critical concern, set daCritical true (and/or consensus "DA-CRITICAL")
+and the paper cannot be Accepted regardless of the numbers.
+Required JSON shape (ReviewerScoreSet — Schema 6):
+{
+  "sprintContractId": string,            // echo the id from the scoring plan above
+  "reviewers": [                         // EXACTLY 5 objects, one per role EIC, R1, R2, R3, DA
+    { "role": "EIC" | "R1" | "R2" | "R3" | "DA",
+      "reviewerName": string,
+      "overallScore": number,            // 0-100
+      "dimensions": { "novelty": number, "methodology": number, "clarity": number, "contribution": number, "citation": number },  // each 0-100
+      "keyComments": string[],
+      "requiredChanges": string[],
+      "recommendation": "Accept" | "Minor Revision" | "Major Revision" | "Reject" }
+  ],
+  "editorialDecision": "Accept" | "Minor Revision" | "Major Revision" | "Reject",
+  "consensus": "CONSENSUS-4" | "CONSENSUS-3" | "SPLIT" | "DA-CRITICAL",
+  "confidenceScore": number,             // 0-100
+  "daCritical": boolean,
+  "revisionRoadmap": [                    // advisory — concrete fixes the authors should make
+    { "id": string, "description": string, "reviewer": string,
+      "type": "Major" | "Minor" | "Editorial",
+      "priority": "must_fix" | "should_fix" | "consider",
+      "targetSection": string, "suggestedAction": string }
+  ]
+}`
+
+/**
+ * Phase 1 of the Sprint Contract — PAPER-BLIND. The editorial board pre-commits a
+ * scoring plan (Schema 13) from the config ALONE; the message MUST NOT contain any
+ * section/draft content. Streams the agent's reasoning through onChunk, forces the
+ * Schema-13 block, parses it (retry ONCE on a missing field, then rethrow). Tags the
+ * call with IR-03 access metadata so the server confirms this runs on a verified paper.
+ *
+ * @param config       - the Paper Configuration Record (the ONLY context Phase 1 sees)
+ * @param onChunk       - called with each streamed text chunk (live UI updates)
+ * @param modelConfig  - which model to route to (optional; server defaults to Sonnet)
+ * @returns            - the parsed ScoringPlan (committed pre-commitment)
+ */
+export async function runReviewPhase1(
+  config: PaperConfig,
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig
+): Promise<ScoringPlan> {
+  // PAPER-BLIND message: config context + a short instruction + the Schema-13 contract.
+  // Deliberately NO draftBlock / section content here — that is the whole point of Phase 1.
+  const userMessage = `
+You are the Stage-3 editorial board running Phase 1 of a two-phase peer-review Sprint
+Contract. This phase is PAPER-BLIND: you have NOT been shown the paper draft. Using only
+the configuration below, pre-commit a scoring plan for the five rubric dimensions before
+any content can influence your rubric.
+
+${configBlock(config)}
+
+${CONTRACT_SCORING_PLAN}
+`.trim()
+
+  // One call = one parse attempt. Factored so the retry path is identical.
+  const runOnce = async (): Promise<ScoringPlan> => {
+    const raw = await callAgent(PEER_REVIEWER_PROMPT, userMessage, onChunk, modelConfig, {
+      access: REVIEW_ACCESS,
+    })
+    // parseSchema13 throws HandoffIncompleteError if sprintContractId or dimensions[] are missing.
+    return parseSchema13(raw)
+  }
+
+  try {
+    return await runOnce()
+  } catch (err) {
+    if (err instanceof HandoffIncompleteError) {
+      // Retry the SAME call exactly once (mirrors runIntegrityGate's single auto-retry).
+      console.warn('[runReviewPhase1] schema13 handoff incomplete, retrying once:', err.message)
+      return await runOnce() // a second failure throws out of this function (rethrow)
+    }
+    // Network / server / non-handoff failure (incl. an IR-03 403) — surface to the caller.
+    throw err
+  }
+}
+
+/**
+ * Phase 2 of the Sprint Contract — PAPER-VISIBLE. The same board, now holding the
+ * committed Phase-1 scoring plan, reads the full draft and emits the 5-reviewer Review
+ * Report (Schema 6). Streams through onChunk, forces the Schema-6 block, parses it
+ * (retry ONCE then rethrow). Same IR-03 access metadata + PEER_REVIEWER_PROMPT.
+ *
+ * IMPORTANT (FR-22 / EH-03): this does NOT re-run Phase 1. It takes the already-committed
+ * scoringPlan as an argument, so the page can retry Phase 2 alone without discarding the
+ * blind pre-commitment. Keep the two phases decoupled.
+ *
+ * @param config       - the Paper Configuration Record
+ * @param draft        - the Schema-4 PaperDraft (from buildPaperDraft) — the paper being scored
+ * @param scoringPlan  - the committed Phase-1 plan the panel must score against
+ * @param onChunk      - called with each streamed text chunk (live UI updates)
+ * @param modelConfig  - which model to route to (optional; server defaults to Sonnet)
+ * @returns            - the parsed ReviewerScoreSet (5 reviewers + advisory decision)
+ */
+export async function runReviewPhase2(
+  config: PaperConfig,
+  draft: PaperDraft,
+  scoringPlan: ScoringPlan,
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig
+): Promise<ReviewerScoreSet> {
+  // PAPER-VISIBLE message: config + the committed plan (priorBlock) + the full draft
+  // (draftBlock, reused from the integrity gate) + the Schema-6 contract.
+  const userMessage = `
+You are the Stage-3 editorial board running Phase 2 of the two-phase peer-review Sprint
+Contract. You now have the full paper draft AND the scoring plan you committed in Phase 1.
+Score the paper against that pre-committed plan and produce the 5-reviewer review report.
+
+${configBlock(config)}
+
+${priorBlock('Pre-committed Scoring Plan (Sprint Contract)', scoringPlan)}
+
+${draftBlock(draft)}
+
+${CONTRACT_REVIEW}
+`.trim()
+
+  // One call = one parse attempt. Factored so the retry path is identical.
+  const runOnce = async (): Promise<ReviewerScoreSet> => {
+    const raw = await callAgent(PEER_REVIEWER_PROMPT, userMessage, onChunk, modelConfig, {
+      access: REVIEW_ACCESS,
+    })
+    // parseSchema6 throws HandoffIncompleteError if the 5 reviewers / required fields are missing.
+    return parseSchema6(raw)
+  }
+
+  try {
+    return await runOnce()
+  } catch (err) {
+    if (err instanceof HandoffIncompleteError) {
+      // Retry the SAME call exactly once (mirrors runIntegrityGate's single auto-retry).
+      console.warn('[runReviewPhase2] schema6 handoff incomplete, retrying once:', err.message)
+      return await runOnce() // a second failure throws out of this function (rethrow)
+    }
+    // Network / server / non-handoff failure (incl. an IR-03 403) — surface to the caller.
+    throw err
+  }
 }

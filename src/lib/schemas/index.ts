@@ -6,16 +6,35 @@
 // extractJsonBlock does the "find the JSON" step; the parseSchemaN functions do
 // the field validation (see schema1/2/3.ts).
 
-import type { RQBrief, Bibliography, SynthesisReport, PaperDraft, IntegrityReport } from '@/lib/types'
+import type {
+  RQBrief,
+  Bibliography,
+  SynthesisReport,
+  PaperDraft,
+  IntegrityReport,
+  ReviewerScoreSet,
+  ScoringPlan,
+} from '@/lib/types'
 import { parseSchema1 } from './schema1'
 import { parseSchema2 } from './schema2'
 import { parseSchema3 } from './schema3'
 import { parseSchema4 } from './schema4'
 import { parseSchema5 } from './schema5'
+import { parseSchema6 } from './schema6'
+import { parseSchema13 } from './schema13'
 
 // Which schema a given agent's output maps to.
-// schema1–3: P9 deep-research handoffs. schema4: P10 paper draft. schema5: P10 integrity report.
-export type SchemaId = 'schema1' | 'schema2' | 'schema3' | 'schema4' | 'schema5'
+// schema1–3: P9 deep-research handoffs. schema4: P10 paper draft. schema5: P10
+// integrity report. schema6: P11 review report (Phase 2). schema13: P11 scoring
+// plan (Phase 1, paper-blind).
+export type SchemaId =
+  | 'schema1'
+  | 'schema2'
+  | 'schema3'
+  | 'schema4'
+  | 'schema5'
+  | 'schema6'
+  | 'schema13'
 
 export { HandoffIncompleteError } from './errors'
 export { parseSchema1 } from './schema1'
@@ -23,6 +42,8 @@ export { parseSchema2 } from './schema2'
 export { parseSchema3 } from './schema3'
 export { parseSchema4 } from './schema4'
 export { parseSchema5 } from './schema5'
+export { parseSchema6 } from './schema6'
+export { parseSchema13 } from './schema13'
 
 // ── extractJsonBlock ─────────────────────────────────────────────────────────
 // Pull the JSON object out of an agent's free-form reply.
@@ -144,7 +165,7 @@ function findLastBalancedObject(raw: string): string | null {
 export function parseSchema(
   raw: string,
   schemaId: SchemaId,
-): RQBrief | Bibliography | SynthesisReport | PaperDraft | IntegrityReport {
+): RQBrief | Bibliography | SynthesisReport | PaperDraft | IntegrityReport | ReviewerScoreSet | ScoringPlan {
   switch (schemaId) {
     case 'schema1':
       return parseSchema1(raw)
@@ -156,6 +177,10 @@ export function parseSchema(
       return parseSchema4(raw)
     case 'schema5':
       return parseSchema5(raw)
+    case 'schema6':
+      return parseSchema6(raw)
+    case 'schema13':
+      return parseSchema13(raw)
     default: {
       // Exhaustiveness guard: if SchemaId ever grows a new member, TypeScript
       // flags this branch at compile time.

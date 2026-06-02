@@ -70,6 +70,20 @@ export interface PaperState {
   integrityPassDate?: string | null      // ISO time the user PASSED the gate (null/absent = never passed)
   complianceHistory?: ComplianceEntry[]  // append-only audit trail (Stage 6 record); never rewritten
   integrityStatus?: 'idle' | 'running' | 'awaiting-review' | 'passed' | 'failed' | 'error'
+
+  // ── P11: Stage 3 (Review) results ──
+  // Same DR-01 back-compat rule as the P9/P10 blocks above: ALL optional, so a
+  // paper saved under P0–P10 (which never ran peer review) still loads cleanly —
+  // an old save just has none of these and the app treats review as "not run yet".
+  // Stage 3 only runs on a 2.5-PASS draft, so these are populated AFTER the
+  // integrity gate above.
+  scoringPlan?: ScoringPlan                 // Schema 13 — the paper-blind pre-commitment (Phase 1)
+  reviewReport?: ReviewerScoreSet           // Schema 6 — the 5-reviewer Review Report (Phase 2)
+  revisionRoadmap?: RoadmapItem[]           // Schema 7 items extracted from the review (full parser is P13)
+  reviewDecision?: EditorialDecision        // the user's chosen editorial outcome (binding once picked)
+  // Where the review UI is in its two-phase lifecycle. Mirrors integrityStatus above.
+  reviewStatus?: 'idle' | 'running-phase1' | 'running-phase2' | 'awaiting-decision' | 'accepted' | 'revision' | 'rejected' | 'error'
+  revisionLoopCount?: number                // incremented on a Reject (P11.9); formally finalized in P13/P18
 }
 
 // ── P8: Multi-model adapter ──
@@ -241,4 +255,109 @@ export interface ComplianceEntry {
   action: 'integrity_pass' | 'override' | 'schema_retry' | 'edit_after_pass' | 'content_frozen'
   agentId: string
   reason?: string             // REQUIRED when action === 'override' (the permanent override rationale)
+}
+
+// ── P11: Stage 3 (Review) handoff schema types ──
+// Stage 3 is a TWO-PHASE peer review, run ONLY on a draft that PASSED the Stage
+// 2.5 integrity gate. Think of it like a double-blind measurement protocol:
+//   Phase 1 (PAPER-BLIND): the 5 reviewers pre-commit a scoring plan (Schema 13)
+//     WITHOUT seeing any paper content — only config/title + the dimension list.
+//     This locks in "what we'll grade on" before anyone reads the draft, so the
+//     rubric can't be reverse-engineered to flatter (or punish) the paper.
+//   Phase 2 (PAPER-VISIBLE): the reviewers now see the full draft PLUS the Phase-1
+//     plan, and emit the 5-reviewer Review Report (Schema 6).
+// The agent's own editorialDecision is ADVISORY — the BINDING decision is
+// recomputed by deriveReviewDecision() in review.ts (mirrors deriveGateDecision).
+
+// The 5 reviewer roles. EIC = Editor-in-Chief; R1/R2/R3 = referees; DA = Devil's
+// Advocate (its critical flag can OVERRIDE a numeric pass — see review.ts).
+export type ReviewerRole = 'EIC' | 'R1' | 'R2' | 'R3' | 'DA'
+
+// The four editorial outcomes, in descending order of how clean the paper is.
+export type EditorialDecision = 'Accept' | 'Minor Revision' | 'Major Revision' | 'Reject'
+
+// How aligned the 5 reviewers were:
+//   CONSENSUS-4 — 4+ reviewers agree on the outcome
+//   CONSENSUS-3 — 3 reviewers agree (a weaker majority)
+//   SPLIT       — no clear majority
+//   DA-CRITICAL — the Devil's Advocate raised a critical flag (overrides a pass)
+export type ReviewConsensus = 'CONSENSUS-4' | 'CONSENSUS-3' | 'SPLIT' | 'DA-CRITICAL'
+
+// The 5-axis rubric each reviewer scores. Each axis is 0–100 (unlike the 1–10
+// FINER axes in Stage 1 — different stage, different scale).
+export interface ReviewerDimensionScores {
+  novelty: number
+  methodology: number
+  clarity: number
+  contribution: number
+  citation: number
+} // each 0-100
+
+// One reviewer's full scorecard — what role, their numbers, and their comments.
+export interface ReviewerReport {
+  role: ReviewerRole
+  reviewerName: string                 // human label; defaults to the role string if the agent omits it
+  overallScore: number                 // 0-100
+  dimensions: ReviewerDimensionScores
+  keyComments: string[]                // free-form notes (default [] — not hard-required)
+  requiredChanges: string[]            // change requests (default [] — not hard-required)
+  recommendation: EditorialDecision    // this reviewer's own advisory call
+}
+
+// One row of the stage-3 vs stage-3' score comparison. Populated ONLY at Stage 3'
+// (the post-revision re-review in P14) — defined now so P14 reuses this shape.
+export interface ScoreTrajectoryEntry {
+  dimension: string
+  stage3: number
+  stage3Prime: number
+  delta: number
+}
+
+// The whole Schema-6 Review Report — the bundled output of Phase 2.
+export interface ReviewerScoreSet {
+  sprintContractId: string             // ties Phase-2 back to the Phase-1 scoring plan
+  reviewers: ReviewerReport[]          // exactly 5: EIC, R1, R2, R3, DA
+  editorialDecision: EditorialDecision // the agent's ADVISORY decision (review.ts recomputes the binding one)
+  consensus: ReviewConsensus
+  confidenceScore: number              // 0-100
+  daCritical: boolean                  // true if the Devil's Advocate raised a critical flag
+  revisionRoadmap?: RoadmapItem[]      // Schema-7 items embedded in the report (leniently parsed in P11; full parser is P13)
+  scoreTrajectory?: ScoreTrajectoryEntry[]  // only present at Stage 3' (P14)
+}
+
+// A lightweight Schema-7 revision item. The FULL Schema-7 parser arrives in P13;
+// we define the type HERE so P13 reuses it and the review report can already
+// carry an advisory roadmap. priority is the only hard-required classifier.
+export interface RoadmapItem {
+  id: string
+  description: string
+  reviewer?: string                    // which reviewer raised it (role string)
+  type?: 'Major' | 'Minor' | 'Editorial'
+  priority: 'must_fix' | 'should_fix' | 'consider'
+  targetSection?: string               // which paper section it touches
+  suggestedAction?: string             // the recommended fix
+}
+
+// One dimension of the Phase-1 (paper-blind) scoring plan: what the reviewers
+// said they would look for, BEFORE seeing the paper.
+export interface ScoringPlanDimension {
+  dimensionId: string                  // e.g. 'novelty'
+  whatToLookFor: string                // the rubric criterion committed in advance
+  whatTriggersBlock?: string           // optional: what would force a low/blocking score
+  whatTriggersWarn?: string            // optional: what would warrant a warning
+}
+
+// Schema 13 — the paper-blind pre-commitment. `committed` is true once a valid
+// plan parses: emitting a valid plan IS the act of committing to it.
+export interface ScoringPlan {
+  sprintContractId: string             // shared id linking the plan to its Phase-2 report
+  committed: boolean
+  dimensions: ScoringPlanDimension[]
+}
+
+// Convenience bundle: both halves of a completed two-phase review together — the
+// full output of the (P11) runReview() orchestration.
+export interface ReviewResult {
+  scoringPlan: ScoringPlan
+  reviewReport: ReviewerScoreSet
 }

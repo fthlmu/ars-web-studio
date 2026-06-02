@@ -379,16 +379,18 @@ export default function IntegrityPage() {
             className="rounded-lg border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/20 p-5 text-center space-y-3"
           >
             <p className="font-semibold text-green-800 dark:text-green-200">
-              Integrity Gate PASSED — Stage 3 (Peer Review) is built in P11
+              Integrity Gate PASSED — proceed to peer review
             </p>
             <p className="text-sm text-green-700 dark:text-green-300">
-              Your draft cleared the Stage 2.5 integrity gate. The next stage (peer
-              review) is not built yet; this sign-off is recorded in the compliance log.
+              Your draft cleared the Stage 2.5 integrity gate; this sign-off is recorded in
+              the compliance log. Peer review (Stage 3) is now available.
             </p>
             <div className="flex flex-col items-center gap-2 sm:flex-row sm:justify-center">
-              {/* No navigation target (P11 not built). Disabled, but present so the
-                  PASS state still exposes the canonical proceed affordance. */}
-              <Button data-testid="proceed-to-review" disabled>
+              {/* P11: Stage 3 now exists — this advances to the peer-review route. */}
+              <Button
+                data-testid="proceed-to-review"
+                onClick={() => router.push('/pipeline/review')}
+              >
                 Proceed to Peer Review
               </Button>
               <Button variant="outline" onClick={() => router.push('/pipeline')}>
