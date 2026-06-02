@@ -22,7 +22,16 @@ import {
   REVISION_COACH_PROMPT,
   // P15 Stage 4→5: the opt-in claim-faithfulness audit prompt.
   CLAIM_AUDIT_PROMPT,
+  // P16 Stage 5: the formatter agent prompt (verified_only). The artifact generation is
+  // deterministic (P6 builders); this constant documents the formatter's contract.
+  FORMATTER_PROMPT,
 } from './ars-agents'
+// P16 Stage 5: the shipped P6 export builders the formatter routes its output through.
+import { buildMarkdown } from './export/markdown'
+import { buildLatex } from './export/latex'
+import { buildDocHtml } from './export/docx'
+import { safeFilename } from './export/content'
+import type { ExportFormat } from './export/refuse-guard'
 // P9: the 5 deep-research agent prompts that make up the Stage-1 research chain.
 // (This module is created by the deep-research agent in parallel; same path/names.)
 import {
@@ -1171,6 +1180,74 @@ ${CONTRACT_CLAIM_AUDIT}
       return runOnce() // a second failure throws out of this function (rethrow)
     }
     throw err
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P16: STAGE 5 — FINALIZE / FORMATTER (FR-43)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The formatter (formatter_agent, data_access: verified_only) renders an export-ready,
+// integrity-cleared paper into a publication format. In this app that rendering is
+// DETERMINISTIC: it reuses the shipped P6 builders rather than a live LLM call, so the
+// verified, frozen content can never be silently altered at the formatting step (which
+// would violate verified_only). The bundled FORMATTER_PROMPT documents the contract; this
+// object exposes the agent metadata so call sites can reason about it explicitly.
+export const FORMATTER_AGENT = {
+  id: 'formatter_agent',
+  dataAccess: 'verified_only' as const,
+  // The bundled system prompt (used if a live formatting pass is ever wired in).
+  prompt: FORMATTER_PROMPT,
+} as const
+
+// The text-based export formats the formatter can build entirely in the browser. PDF is
+// handled separately via the /api/export-pdf Typst route (it needs a server subprocess).
+export type TextExportFormat = Exclude<ExportFormat, 'pdf'>
+
+// One formatted artifact ready for download: the suggested filename, the file contents,
+// and the MIME type to stamp on the Blob.
+export interface FormattedArtifact {
+  format: TextExportFormat
+  filename: string
+  content: string
+  mimeType: string
+}
+
+/**
+ * Formats an export-ready paper into a downloadable text artifact (Markdown / LaTeX /
+ * DOCX) by routing through the shipped P6 builders. PDF is intentionally NOT handled
+ * here — it goes through the /api/export-pdf Typst route. Callers must already have
+ * confirmed the format is permitted by the REFUSE guard (computeRefuseGuard); this
+ * function does not re-derive that decision.
+ *
+ * @param paper  - the export-ready PaperState
+ * @param format - 'markdown' | 'latex' | 'docx'
+ * @returns      - the formatted artifact (filename + content + MIME type)
+ */
+export function formatPaper(paper: PaperState, format: TextExportFormat): FormattedArtifact {
+  switch (format) {
+    case 'markdown':
+      return {
+        format,
+        filename: safeFilename(paper.config.topic, 'md'),
+        content: buildMarkdown(paper),
+        mimeType: 'text/markdown;charset=utf-8',
+      }
+    case 'latex':
+      return {
+        format,
+        filename: safeFilename(paper.config.topic, 'tex'),
+        content: buildLatex(paper),
+        mimeType: 'application/x-tex;charset=utf-8',
+      }
+    case 'docx':
+      // HTML-based .doc (see export/docx.ts): Word opens it as an editable document.
+      return {
+        format,
+        filename: safeFilename(paper.config.topic, 'doc'),
+        content: buildDocHtml(paper),
+        mimeType: 'application/msword;charset=utf-8',
+      }
   }
 }
 

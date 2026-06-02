@@ -164,6 +164,13 @@ export interface PaperState {
   // formatter REFUSE guard (PDF/LaTeX removed, Markdown stays). Absent = never run.
   claimAuditFindings?: ClaimAuditFinding[]
   claimAuditStatus?: 'idle' | 'running' | 'done' | 'error'
+
+  // ── P16: Stage 5 (Finalize / Export) ──
+  // Same DR-01 back-compat rule as every block above: OPTIONAL, so a paper saved
+  // under P0–P15 still loads cleanly. Which export formats the user has downloaded
+  // from the finalize screen (e.g. ['markdown','pdf']). Append-only set; used for the
+  // "already exported" hint and the Stage-6 process summary. Absent = nothing exported.
+  exportedFormats?: string[]
 }
 
 // ── P12: one turn of the EIC Socratic coaching dialogue ──

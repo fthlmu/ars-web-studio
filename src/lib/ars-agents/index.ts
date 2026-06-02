@@ -17,3 +17,5 @@ export { SYNTHESIS_AGENT_PROMPT }      from './synthesis_agent'
 export { INTEGRITY_VERIFICATION_PROMPT } from './integrity_verification'
 // P15 Stage 4→5: opt-in claim-faithfulness audit (ARS_CLAIM_AUDIT, default off).
 export { CLAIM_AUDIT_PROMPT } from './claim_audit'
+// P16 Stage 5: formatter agent (verified_only) — deterministic impl in ars-client.formatPaper.
+export { FORMATTER_PROMPT } from './formatter'

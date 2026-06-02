@@ -13,15 +13,18 @@
 import type { ClaimAuditFinding } from '@/lib/types'
 
 // The export formats the app can produce (mirrors PaperConfig.outputFormats values).
-export type ExportFormat = 'markdown' | 'latex' | 'pdf'
+// DOCX joins the original P15 set as a fourth, publication-grade ("typeset") deliverable
+// alongside PDF and LaTeX — like them, it is refused on a HIGH-WARN (see REFUSED_FORMATS).
+export type ExportFormat = 'markdown' | 'latex' | 'pdf' | 'docx'
 
-// The formats that are REMOVED when the guard refuses. Markdown is deliberately NOT
-// here — it always stays available so the author can keep editing.
-const REFUSED_FORMATS: ExportFormat[] = ['pdf', 'latex']
+// The formats that are REMOVED when the guard refuses. These are the typeset,
+// publication-grade artifacts (PDF, LaTeX, DOCX). Markdown is deliberately NOT here —
+// it always stays available so the author can keep editing the affected claims.
+const REFUSED_FORMATS: ExportFormat[] = ['pdf', 'latex', 'docx']
 // The format that always survives a refusal.
 const SAFE_FORMATS: ExportFormat[] = ['markdown']
 // All formats, used when nothing is refused.
-const ALL_FORMATS: ExportFormat[] = ['markdown', 'latex', 'pdf']
+const ALL_FORMATS: ExportFormat[] = ['markdown', 'latex', 'pdf', 'docx']
 
 export interface RefuseState {
   // True when at least one HIGH-WARN claim-audit finding exists.
@@ -63,8 +66,8 @@ export function computeRefuseGuard(findings?: ClaimAuditFinding[]): RefuseState 
     reason:
       `The claim-faithfulness audit raised ${highWarnCount} high-severity ` +
       'finding(s): one or more claims materially overstate or misattribute their ' +
-      'evidence. Typeset export (PDF / LaTeX) is refused until these are resolved; ' +
-      'Markdown stays available so you can edit the affected claims.',
+      'evidence. Typeset export (PDF / LaTeX / DOCX) is refused until these are ' +
+      'resolved; Markdown stays available so you can edit the affected claims.',
   }
 }
 
