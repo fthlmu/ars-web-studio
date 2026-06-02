@@ -142,6 +142,28 @@ export interface PaperState {
   residualCoachingThread?: CoachingMessage[]
   residualCoachingRoundCount?: number       // bounded loop invariant (max 5 — FR-36)
   residualCoachingStatus?: 'idle' | 'round-0' | 'in-progress' | 'cap-reached' | 'proceed-revision' | 'error'
+
+  // ── P15: Stage 4.5 (Final Integrity Gate, ZERO-TOLERANCE) + opt-in Claim Audit ──
+  // Same DR-01 back-compat rule as every block above: ALL optional, so a paper saved
+  // under P0–P14 (which never ran the final gate) still loads cleanly.
+  //
+  // The Stage-4.5 integrity RUNS reuse the SAME `integrityReports[]` array above (each
+  // entry carries its own `stage`, so a 4.5 report is just one with stage === '4.5');
+  // the latest stage-'2.5' entry is what the Stage-2.5 comparison column diffs against.
+  // These fields record the 4.5-SPECIFIC outcome distinct from the 2.5 gate:
+  finalIntegrityPassDate?: string | null    // ISO time the 4.5 gate PASSED (null/absent = never)
+  // Where the 4.5 gate UI is in its lifecycle. Mirrors integrityStatus above. 'failed' is
+  // a zero-tolerance block (a SUSPECTED/INSUFFICIENT verdict), NOT an exception ('error').
+  finalIntegrityStatus?: 'idle' | 'running' | 'awaiting-review' | 'passed' | 'failed' | 'error'
+  // The high-level pipeline phase. P15 only needs the two states around the final gate;
+  // P18 widens this into the full 20-state machine (additive — a wider union supersedes).
+  pipelineStatus?: PipelineStatus
+
+  // Opt-in L3 Claim-Faithfulness Audit (Stage 4→5, ARS_CLAIM_AUDIT). Runs ONCE on the
+  // finalize screen when enabled + export-ready; its HIGH-WARN findings drive the
+  // formatter REFUSE guard (PDF/LaTeX removed, Markdown stays). Absent = never run.
+  claimAuditFindings?: ClaimAuditFinding[]
+  claimAuditStatus?: 'idle' | 'running' | 'done' | 'error'
 }
 
 // ── P12: one turn of the EIC Socratic coaching dialogue ──
@@ -323,6 +345,30 @@ export interface ComplianceEntry {
   action: 'integrity_pass' | 'override' | 'schema_retry' | 'edit_after_pass' | 'content_frozen'
   agentId: string
   reason?: string             // REQUIRED when action === 'override' (the permanent override rationale)
+}
+
+// ── P15: Stage 4.5 (Final Integrity Gate) + Claim Audit types ──
+// The high-level pipeline phase. P15 only models the two states immediately around
+// the zero-tolerance final gate: 'running-final-gate' (the gate is executing / the
+// draft has not yet passed) and 'export-ready' (the 4.5 gate PASSED — export is now
+// permitted). P18 replaces this with the full 20-state PipelineStatus machine; until
+// then this narrow union is the contract the finalize screen reads.
+export type PipelineStatus = 'running-final-gate' | 'export-ready'
+
+// One finding from the opt-in Claim-Faithfulness Audit. Severity drives the formatter
+// REFUSE guard: a single HIGH-WARN removes the PDF/LaTeX export paths (Markdown stays).
+//   OK        — the claim is faithfully supported by the cited evidence
+//   LOW-WARN  — a minor overreach / soft mismatch (advisory; export still allowed)
+//   HIGH-WARN — the claim materially overstates or misattributes its evidence (REFUSE)
+export type ClaimAuditSeverity = 'OK' | 'LOW-WARN' | 'HIGH-WARN'
+
+export interface ClaimAuditFinding {
+  id: string
+  claim: string                 // the paper's claim being audited
+  section?: string              // which section the claim appears in
+  severity: ClaimAuditSeverity
+  explanation: string           // why the auditor assigned this severity
+  suggestedFix?: string         // optional: how to bring the claim back in line with the evidence
 }
 
 // ── P11: Stage 3 (Review) handoff schema types ──

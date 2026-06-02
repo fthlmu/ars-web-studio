@@ -14,13 +14,22 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Label } from '@/components/ui/label'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
+import { Switch } from '@/components/ui/switch'
 import { ModelSelector } from '@/components/ModelSelector'
 import { DEFAULT_MODELS } from '@/lib/types'
 import type { ModelConfig } from '@/lib/types'
-import { loadModelConfig, saveModelConfig } from '@/lib/storage'
+import {
+  loadModelConfig,
+  saveModelConfig,
+  loadGlobalSettings,
+  saveGlobalSettings,
+} from '@/lib/storage'
 
 export default function SettingsPage() {
   const [current, setCurrent] = useState<ModelConfig>(DEFAULT_MODELS[0])
+
+  // P15 — opt-in Claim-Faithfulness Audit toggle (ARS_CLAIM_AUDIT). Defaults OFF.
+  const [claimAuditEnabled, setClaimAuditEnabled] = useState(false)
 
   // Custom OpenAI-compatible endpoint form fields. There is deliberately NO API key
   // field — see the security note at the top of this file.
@@ -30,8 +39,17 @@ export default function SettingsPage() {
   const [saved, setSaved] = useState(false)
 
   useEffect(() => {
-    queueMicrotask(() => setCurrent(loadModelConfig()))
+    queueMicrotask(() => {
+      setCurrent(loadModelConfig())
+      setClaimAuditEnabled(loadGlobalSettings().claimAuditEnabled)
+    })
   }, [])
+
+  // Persist the claim-audit toggle immediately on change (settings are app-wide).
+  function onClaimAuditChange(enabled: boolean) {
+    setClaimAuditEnabled(enabled)
+    saveGlobalSettings({ ...loadGlobalSettings(), claimAuditEnabled: enabled })
+  }
 
   function saveCustom() {
     const config: ModelConfig = {
@@ -66,6 +84,35 @@ export default function SettingsPage() {
         </CardHeader>
         <CardContent>
           <ModelSelector className="w-full" onChange={setCurrent} />
+        </CardContent>
+      </Card>
+
+      {/* P15 — opt-in Claim-Faithfulness Audit (ARS_CLAIM_AUDIT). Default OFF. */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Claim-Faithfulness Audit</CardTitle>
+          <CardDescription>
+            After the final integrity gate passes, optionally run an extra audit that
+            checks whether each claim in the paper is faithfully supported by the evidence
+            it cites. A high-severity finding disables PDF / LaTeX export (Markdown stays).
+            Adds one model call on the finalize screen.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <label className="flex items-start gap-3 text-sm">
+            <Switch
+              id="claim-audit-toggle"
+              data-testid="claim-audit-toggle"
+              checked={claimAuditEnabled}
+              onCheckedChange={onClaimAuditChange}
+            />
+            <span>
+              Enable Claim-Faithfulness Audit{' '}
+              <span className="text-muted-foreground">
+                ({claimAuditEnabled ? 'on' : 'off'} — applies to the next finalize)
+              </span>
+            </span>
+          </label>
         </CardContent>
       </Card>
 

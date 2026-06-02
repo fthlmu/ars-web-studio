@@ -414,8 +414,8 @@ export default function ReviewPage() {
                   Accept — advancing to the Final Integrity Gate (Stage 4.5)
                 </p>
                 <p className="text-sm text-green-700 dark:text-green-300">
-                  Even an Accept does not skip the zero-tolerance final integrity gate. That
-                  gate is built in P15; your decision is recorded.
+                  Even an Accept does not skip the zero-tolerance final integrity gate
+                  (Stage 4.5). Your decision is recorded; continue to the final gate.
                 </p>
               </>
             )}
@@ -442,6 +442,15 @@ export default function ReviewPage() {
               </>
             )}
             <div className="flex flex-col items-start gap-2 sm:flex-row">
+              {/* Accept now navigates into the live P15 zero-tolerance final gate. */}
+              {paper.reviewDecision === 'Accept' && (
+                <Button
+                  data-testid="enter-final-gate"
+                  onClick={() => router.push('/pipeline/final-integrity')}
+                >
+                  Continue to Final Integrity Gate →
+                </Button>
+              )}
               {/* Revision decisions now navigate into the live P12 coaching loop. */}
               {(paper.reviewDecision === 'Minor Revision' || paper.reviewDecision === 'Major Revision') && (
                 <Button

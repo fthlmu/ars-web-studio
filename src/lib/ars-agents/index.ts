@@ -15,3 +15,5 @@ export { SOURCE_VERIFICATION_PROMPT }  from './source_verification'
 export { SYNTHESIS_AGENT_PROMPT }      from './synthesis_agent'
 // P10 Stage 2.5: integrity verification gatekeeper (reused at Stage 4.5 in P15).
 export { INTEGRITY_VERIFICATION_PROMPT } from './integrity_verification'
+// P15 Stage 4→5: opt-in claim-faithfulness audit (ARS_CLAIM_AUDIT, default off).
+export { CLAIM_AUDIT_PROMPT } from './claim_audit'

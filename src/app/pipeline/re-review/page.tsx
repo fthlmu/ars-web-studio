@@ -299,12 +299,15 @@ export default function ReReviewPage() {
                 : 'Re-review accepted — advancing to the Final Integrity Gate (Stage 4.5)'}
             </p>
             <p className="text-sm text-green-700 dark:text-green-300">
-              The zero-tolerance final integrity gate is built in P15; your revised draft and
-              re-review are saved. {frozenLabel
+              The only remaining step is the zero-tolerance final integrity gate; your revised
+              draft and re-review are saved. {frozenLabel
                 ? `Both permitted revision loops have been used (${MAX_REVISION_LOOPS} of ${MAX_REVISION_LOOPS}).`
                 : ''}
             </p>
             <div className="flex flex-col items-start gap-2 sm:flex-row">
+              <Button data-testid="enter-final-gate" onClick={() => router.push('/pipeline/final-integrity')}>
+                Continue to Final Integrity Gate →
+              </Button>
               <Button variant="outline" onClick={() => router.push('/pipeline')}>Back to pipeline</Button>
             </div>
           </div>

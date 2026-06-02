@@ -48,6 +48,8 @@ export { parseSchema5 } from './schema5'
 export { parseSchema6 } from './schema6'
 export { parseSchema7 } from './schema7'
 export { parseSchema13 } from './schema13'
+// P15: the opt-in claim-faithfulness audit parser (tolerant — empty findings is valid).
+export { parseClaimAudit } from './schemaClaimAudit'
 
 // ── extractJsonBlock ─────────────────────────────────────────────────────────
 // Pull the JSON object out of an agent's free-form reply.

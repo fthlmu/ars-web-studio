@@ -20,6 +20,8 @@ import {
   PEER_REVIEWER_PROMPT,
   // P13 Stage 4: the bundled revision-coach prompt (the REVISE executor).
   REVISION_COACH_PROMPT,
+  // P15 Stage 4→5: the opt-in claim-faithfulness audit prompt.
+  CLAIM_AUDIT_PROMPT,
 } from './ars-agents'
 // P9: the 5 deep-research agent prompts that make up the Stage-1 research chain.
 // (This module is created by the deep-research agent in parallel; same path/names.)
@@ -41,6 +43,7 @@ import {
   parseSchema6,
   parseSchema7,
   parseSchema13,
+  parseClaimAudit,
   extractJsonBlock,
   HandoffIncompleteError,
 } from './schemas'
@@ -76,6 +79,8 @@ import type {
   RevisionRoadmap,
   DeltaReport,
   DeltaSection,
+  // P15 Stage 4→5 (Claim Audit): one claim-faithfulness finding (OK/LOW-WARN/HIGH-WARN).
+  ClaimAuditFinding,
 } from './types'
 
 // ─── Core streaming primitive ────────────────────────────────────────────────
@@ -1070,6 +1075,103 @@ ${CONTRACT_INTEGRITY}
   }
 
   return report
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P15: STAGE 4.5 — FINAL INTEGRITY GATE (zero-tolerance) + CLAIM AUDIT
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The final gate REUSES the exact Stage-2.5 machinery — same agent, same Schema-5
+// contract, same parser/retry — only the stage literal changes to '4.5'. The
+// DIFFERENT, stricter pass/fail rule lives in final-integrity.ts
+// (deriveFinalGateDecision), NOT here: this function only PRODUCES the report. Both
+// export paths (P11 Accept, P13/P14 post-revision) call this one function so a single
+// report shape and a single zero-tolerance rule apply no matter how the paper arrived.
+
+/**
+ * Runs the Stage-4.5 FINAL integrity gate over the (possibly revised) draft. A thin
+ * wrapper over runIntegrityGate pinned to stage '4.5' — kept as its own named export
+ * so call sites read as "final gate", and so the stage literal is never typo'd inline.
+ *
+ * @param draft       - the Schema-4 PaperDraft (from buildPaperDraft)
+ * @param config      - the Paper Configuration Record
+ * @param onChunk     - called with each streamed text chunk (live UI updates)
+ * @param modelConfig - which model to route to (optional)
+ * @returns           - the parsed, timestamp-stamped IntegrityReport (stage === '4.5')
+ */
+export async function runFinalGate(
+  draft: PaperDraft,
+  config: PaperConfig,
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig,
+): Promise<IntegrityReport> {
+  return runIntegrityGate(draft, config, '4.5', onChunk, modelConfig)
+}
+
+// ─── Claim-Faithfulness Audit output contract (appended to the agent's message) ──
+const CONTRACT_CLAIM_AUDIT = `${OUTPUT_CONTRACT_INTRO}
+Required JSON shape (claim-audit result). "findings" MUST be an array; emit ONE object
+per substantive claim you flag (LOW-WARN or HIGH-WARN), plus optionally any notable OK
+claims. A faithful paper may legitimately yield an EMPTY findings array — do not invent
+findings:
+{
+  "findings": [
+    {
+      "id": string,                                  // a short stable id, e.g. "cf-1"
+      "claim": string,                               // the exact claim being audited
+      "section": string,                             // the section it appears in
+      "severity": "OK" | "LOW-WARN" | "HIGH-WARN",
+      "explanation": string,                         // why this severity
+      "suggestedFix": string                         // how to align the claim with its evidence
+    }
+  ]
+}`
+
+/**
+ * Runs the opt-in Claim-Faithfulness Audit over a finished, export-ready paper. Streams
+ * the agent, forces the findings JSON block, parses it leniently (an empty findings
+ * array is VALID — a clean paper), and retries ONCE on a structurally-broken reply.
+ *
+ * @param draft       - the Schema-4 PaperDraft being audited
+ * @param config      - the Paper Configuration Record (citation format, topic, etc.)
+ * @param onChunk     - called with each streamed text chunk (live UI updates)
+ * @param modelConfig - which model to route to (optional)
+ * @returns           - the flat ClaimAuditFinding[] (may be empty)
+ */
+export async function runClaimAudit(
+  draft: PaperDraft,
+  config: PaperConfig,
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig,
+): Promise<ClaimAuditFinding[]> {
+  const userMessage = `
+You are auditing the faithfulness of every substantive claim in the FINAL paper below.
+The paper has already passed integrity verification — do NOT re-verify references or data.
+For each substantive claim, judge whether the strength of the claim matches the strength
+of the evidence the paper presents for it, and assign OK / LOW-WARN / HIGH-WARN.
+
+${configBlock(config)}
+
+${draftBlock(draft)}
+
+${CONTRACT_CLAIM_AUDIT}
+`.trim()
+
+  const runOnce = async (): Promise<ClaimAuditFinding[]> => {
+    const raw = await callAgent(CLAIM_AUDIT_PROMPT, userMessage, onChunk, modelConfig)
+    return parseClaimAudit(raw)
+  }
+
+  try {
+    return await runOnce()
+  } catch (err) {
+    if (err instanceof HandoffIncompleteError) {
+      // Retry the SAME call once on a broken block (mirrors runIntegrityGate).
+      console.warn('[runClaimAudit] claim-audit block unusable, retrying once:', err.message)
+      return runOnce() // a second failure throws out of this function (rethrow)
+    }
+    throw err
+  }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

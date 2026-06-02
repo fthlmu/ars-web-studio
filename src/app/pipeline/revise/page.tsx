@@ -353,10 +353,13 @@ export default function RevisePage() {
                 </p>
                 <p className="text-sm text-green-700 dark:text-green-300">
                   The maximum of {MAX_REVISION_LOOPS} revision loops has been used, so there is no
-                  further review loop. The zero-tolerance final integrity gate is built in P15; your
-                  revised draft is saved.
+                  further review loop. The only remaining step is the zero-tolerance final
+                  integrity gate; your revised draft is saved.
                 </p>
                 <div className="flex flex-col items-start gap-2 sm:flex-row">
+                  <Button data-testid="enter-final-gate" onClick={() => router.push('/pipeline/final-integrity')}>
+                    Continue to Final Integrity Gate →
+                  </Button>
                   <Button variant="outline" onClick={() => router.push('/pipeline')}>Back to pipeline</Button>
                 </div>
               </>
