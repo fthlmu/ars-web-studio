@@ -25,7 +25,13 @@ import {
   // P16 Stage 5: the formatter agent prompt (verified_only). The artifact generation is
   // deterministic (P6 builders); this constant documents the formatter's contract.
   FORMATTER_PROMPT,
+  // P17 Stage 6: process-summary narrator + collaboration-depth observer (advisory only).
+  PROCESS_SUMMARY_PROMPT,
+  COLLABORATION_DEPTH_PROMPT,
 } from './ars-agents'
+// P17 Stage 6: local (no-LLM) assembly of the timeline / key decisions / model-per-stage
+// that ground the two Stage-6 agents and render in the self-reflection report.
+import { buildPipelineTrace, buildKeyDecisions, buildModelPerStage } from './process-summary'
 // P16 Stage 5: the shipped P6 export builders the formatter routes its output through.
 import { buildMarkdown } from './export/markdown'
 import { buildLatex } from './export/latex'
@@ -90,6 +96,10 @@ import type {
   DeltaSection,
   // P15 Stage 4→5 (Claim Audit): one claim-faithfulness finding (OK/LOW-WARN/HIGH-WARN).
   ClaimAuditFinding,
+  // P17 Stage 6 (Process Summary): the bundled self-reflection + collaboration depth.
+  ProcessSummary,
+  AISelfReflection,
+  CollaborationDepth,
 } from './types'
 
 // ─── Core streaming primitive ────────────────────────────────────────────────
@@ -2005,4 +2015,216 @@ ${CONTRACT_REVISION}
     // Network / server / non-handoff failure — surface to the caller (EH-04 Retry).
     throw err
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P17: STAGE 6 — PROCESS SUMMARY (process_summary + collaboration_depth)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Stage 6 is ADVISORY and runs AFTER the first export — it NEVER re-blocks the pipeline.
+// Two halves:
+//   • LOCAL (no LLM, process-summary.ts): the execution timeline, the key decisions, the
+//     model-per-stage list, AND the Failure-Mode Audit Log. These render even if the
+//     agents fail (FR-47), so the paper download is never held hostage to Stage 6.
+//   • LLM (here): the process_summary_agent writes the reflective NARRATIVE + logs agent
+//     DISAGREEMENTS; the collaboration_depth_agent scores the 4 collaboration dimensions.
+//
+// The collaboration_depth_agent is the SAME observer deliberately SKIPPED at the integrity
+// gates (2.5/4.5) — it only describes the collaboration here, after the fact, and can
+// never influence a blocking decision.
+//
+// Parsing is LENIENT (this is advisory): a malformed narrative block degrades to the raw
+// streamed prose; a malformed/out-of-range collaboration block degrades to null (the chart
+// then shows its text fallback). Only a network/agent THROW propagates — the page turns
+// that into a non-blocking "Stage-6 failed → Retry" with the local sections still shown.
+
+// Agent metadata (mirrors FORMATTER_AGENT) — both Stage-6 agents read verified_only data.
+export const PROCESS_SUMMARY_AGENT = {
+  id: 'process_summary_agent',
+  dataAccess: 'verified_only' as const,
+  prompt: PROCESS_SUMMARY_PROMPT,
+} as const
+
+export const COLLABORATION_DEPTH_AGENT = {
+  id: 'collaboration_depth_agent',
+  dataAccess: 'verified_only' as const,
+  prompt: COLLABORATION_DEPTH_PROMPT,
+} as const
+
+// ─── Output contracts appended to each Stage-6 agent's userMessage ─────────────
+const CONTRACT_PROCESS_SUMMARY = `${OUTPUT_CONTRACT_INTRO}
+Required JSON shape (process summary). Ground every statement in the execution trace and
+review context above; do not invent stages or disagreements:
+{
+  "narrative": string,                 // 1-3 short paragraphs reflecting honestly on the run
+  "agentDisagreements": string[]       // points where agents materially disagreed (may be [])
+}`
+
+const CONTRACT_COLLABORATION = `${OUTPUT_CONTRACT_INTRO}
+Required JSON shape (collaboration depth). Each score is an INTEGER 1-5 based on the trace:
+{
+  "delegationIntensity": number,       // 1-5
+  "cognitiveVigilance": number,        // 1-5
+  "cognitiveReallocation": number,     // 1-5
+  "zoneClassification": number,        // 1-5 (overall placement)
+  "zoneLabel": string,                 // e.g. "Co-Creation"
+  "rationale": string                  // one or two sentences
+}`
+
+// Render the locally-built trace + decisions + model list as a context block the agents
+// reason from. Keeps both agents grounded in the SAME ground-truth trace.
+function processTraceBlock(reflection: AISelfReflection): string {
+  const timeline = reflection.timeline
+    .map((t) => `  - ${t.stage}: ${t.label} [${t.status}]${t.detail ? ` (${t.detail})` : ''}`)
+    .join('\n')
+  const decisions = reflection.keyDecisions
+    .map((d) => `  - ${d.label}: ${d.detail}`)
+    .join('\n')
+  const models = reflection.modelPerStage
+    .map((m) => `  - ${m.stage}: ${m.model}`)
+    .join('\n')
+  return `## Execution timeline\n${timeline}\n\n## Key human decisions\n${decisions}\n\n## Model per stage\n${models}`
+}
+
+// Clamp a value to an integer in [1,5], or return null if it is not a finite number.
+function clampScore(v: unknown): number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null
+  return Math.min(5, Math.max(1, Math.round(v)))
+}
+
+// Lenient parse of the process_summary_agent reply. Falls back to the raw prose (minus any
+// JSON block) as the narrative when the block is absent/broken — never throws on bad JSON.
+function parseProcessSummaryReply(raw: string): { narrative: string; agentDisagreements: string[] } {
+  try {
+    const data = extractJsonBlock(raw)
+    if (typeof data === 'object' && data !== null) {
+      const obj = data as Record<string, unknown>
+      const narrative = typeof obj.narrative === 'string' ? obj.narrative.trim() : ''
+      const agentDisagreements = Array.isArray(obj.agentDisagreements)
+        ? obj.agentDisagreements.filter((x): x is string => typeof x === 'string')
+        : []
+      if (narrative.length > 0 || agentDisagreements.length > 0) {
+        return { narrative, agentDisagreements }
+      }
+    }
+  } catch {
+    // fall through to the prose fallback
+  }
+  // Fallback: strip any fenced block and use the streamed prose as the narrative.
+  const prose = raw.replace(/```[\s\S]*?```/g, '').trim()
+  return { narrative: prose, agentDisagreements: [] }
+}
+
+// Lenient parse of the collaboration_depth_agent reply → CollaborationDepth | null. Returns
+// null when the block is missing or any of the four scores is not a usable number (the
+// chart then renders its text fallback).
+function parseCollaborationReply(raw: string): CollaborationDepth | null {
+  let data: unknown
+  try {
+    data = extractJsonBlock(raw)
+  } catch {
+    return null
+  }
+  if (typeof data !== 'object' || data === null) return null
+  const obj = data as Record<string, unknown>
+  const di = clampScore(obj.delegationIntensity)
+  const cv = clampScore(obj.cognitiveVigilance)
+  const cr = clampScore(obj.cognitiveReallocation)
+  const zc = clampScore(obj.zoneClassification)
+  if (di === null || cv === null || cr === null || zc === null) return null
+  const zoneLabel = typeof obj.zoneLabel === 'string' && obj.zoneLabel.trim().length > 0
+    ? obj.zoneLabel.trim()
+    : ['', 'Manual', 'AI-Assisted', 'Co-Creation', 'AI-Led / Human-Supervised', 'Autonomous'][zc] ?? 'Co-Creation'
+  const depth: CollaborationDepth = {
+    delegationIntensity: di,
+    cognitiveVigilance: cv,
+    cognitiveReallocation: cr,
+    zoneClassification: zc,
+    zoneLabel,
+  }
+  if (typeof obj.rationale === 'string' && obj.rationale.trim().length > 0) {
+    depth.rationale = obj.rationale.trim()
+  }
+  return depth
+}
+
+/**
+ * Runs the Stage-6 process summary. Builds the LOCAL trace/decisions/model list from the
+ * paper state, then calls the two Stage-6 agents for the reflective narrative + agent
+ * disagreements and the 4-dimension collaboration depth. Parsing is lenient (advisory):
+ * a bad narrative block degrades to the raw prose; a bad collaboration block degrades to
+ * null. A network/agent THROW propagates so the page can offer a non-blocking retry.
+ *
+ * @param state       - the export-ready PaperState (read-only here)
+ * @param onChunk     - called with each streamed text chunk (live UI updates)
+ * @param modelConfig - which model to route to (optional; server defaults to Sonnet)
+ * @returns           - the ProcessSummary (selfReflection + collaborationDepth|null)
+ */
+export async function runProcessSummary(
+  state: PaperState,
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig,
+): Promise<ProcessSummary> {
+  // ── LOCAL half: the ground-truth trace, key decisions, model-per-stage. ──
+  const modelLabel = modelConfig?.label ?? 'Claude Sonnet 4.5 (default)'
+  const reflection: AISelfReflection = {
+    timeline: buildPipelineTrace(state),
+    keyDecisions: buildKeyDecisions(state),
+    modelPerStage: buildModelPerStage(state, modelLabel),
+    agentDisagreements: [],
+  }
+  const traceBlock = processTraceBlock(reflection)
+
+  // Compact review context so the narrator can spot disagreements (decision + consensus).
+  const reviewContext = state.reviewReport
+    ? priorBlock('Peer Review Report (Schema 6)', {
+        editorialDecision: state.reviewReport.editorialDecision,
+        consensus: state.reviewReport.consensus,
+        daCritical: state.reviewReport.daCritical,
+        residualIssues: state.reReviewReport?.residualIssues,
+      })
+    : '## Peer Review\n(no peer-review report on record)'
+
+  // ── Agent 1: the AI Self-Reflection narrative + disagreements. ──
+  const summaryMessage = `
+You are writing the Stage-6 AI Self-Reflection Report for a finished, exported paper.
+Reflect honestly on how it was produced, using ONLY the trace and context below.
+
+## Paper
+- Topic: ${state.config.topic}
+- Type: ${state.config.paperType}
+
+${traceBlock}
+
+${reviewContext}
+
+${CONTRACT_PROCESS_SUMMARY}
+`.trim()
+
+  const summaryRaw = await callAgent(PROCESS_SUMMARY_PROMPT, summaryMessage, onChunk, modelConfig)
+  const { narrative, agentDisagreements } = parseProcessSummaryReply(summaryRaw)
+  reflection.narrative = narrative
+  reflection.agentDisagreements = agentDisagreements
+
+  // ── Agent 2: the collaboration-depth scores (observer; advisory). ──
+  const collabMessage = `
+You are the collaboration-depth observer rating a finished AI-assisted writing run. Score
+the four dimensions (each 1-5) and classify the Zone, using ONLY the trace below.
+
+${traceBlock}
+
+${CONTRACT_COLLABORATION}
+`.trim()
+
+  let collaborationDepth: CollaborationDepth | null = null
+  try {
+    const collabRaw = await callAgent(COLLABORATION_DEPTH_PROMPT, collabMessage, onChunk, modelConfig)
+    collaborationDepth = parseCollaborationReply(collabRaw)
+  } catch (err) {
+    // Non-blocking: the collaboration chart is the LEAST essential Stage-6 part — log and
+    // continue with a null depth (the chart shows its text fallback). NEVER empty (NFR-16).
+    console.warn('[runProcessSummary] collaboration-depth step skipped:', err)
+  }
+
+  return { selfReflection: reflection, collaborationDepth }
 }

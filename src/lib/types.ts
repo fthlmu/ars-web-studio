@@ -171,6 +171,90 @@ export interface PaperState {
   // from the finalize screen (e.g. ['markdown','pdf']). Append-only set; used for the
   // "already exported" hint and the Stage-6 process summary. Absent = nothing exported.
   exportedFormats?: string[]
+
+  // ── P17: Stage 6 (Process Summary) results ──
+  // Same DR-01 back-compat rule as every block above: ALL optional, so a paper saved
+  // under P0–P16 (which never ran the process summary) still loads cleanly.
+  //
+  // Stage 6 is ADVISORY and runs AFTER the first export — it never re-blocks the
+  // pipeline. The LLM-derived parts (the self-reflection narrative + agent
+  // disagreements, and the 4-dimension collaboration depth) live in processSummary;
+  // the Failure-Mode Audit Log is assembled LOCALLY from integrityReports +
+  // complianceHistory at render time (no LLM call) and is therefore NOT stored here.
+  processSummary?: ProcessSummary
+  processSummaryStatus?: 'idle' | 'running' | 'done' | 'error'
+}
+
+// ── P17: Stage 6 (Process Summary) types ──────────────────────────────────────
+// The AI Self-Reflection Report + the Collaboration Depth chart + the local
+// Failure-Mode Audit Log. Most of this is assembled in software (process-summary.ts);
+// only the reflection narrative + disagreements and the collaboration scores come
+// from the two Stage-6 agents.
+
+// One row of the execution timeline — a pipeline stage that ran, was skipped, or
+// failed. Built locally from PaperState (the *Status fields across P9–P16).
+export interface PipelineTraceEntry {
+  stage: string                                    // e.g. "Stage 1 — Research"
+  label: string                                    // human label of what happened
+  status: 'completed' | 'skipped' | 'failed' | 'not-run'
+  detail?: string                                  // optional extra context (counts, dates)
+}
+
+// One key decision the human made during the run (outline edit, 2.5 override, coaching
+// rounds, editorial decision). Built locally from PaperState.
+export interface ProcessKeyDecision {
+  label: string                                    // short title of the decision
+  detail: string                                   // what was decided / the value
+}
+
+// Which model ran a given stage. Built locally from the active ModelConfig (the app
+// does not record a per-stage model, so the configured model is attributed to every
+// stage that ran — see process-summary.ts).
+export interface ModelStageEntry {
+  stage: string
+  model: string
+}
+
+// The AI Self-Reflection Report. timeline / keyDecisions / modelPerStage are built
+// locally; narrative + agentDisagreements come from the process_summary_agent.
+export interface AISelfReflection {
+  timeline: PipelineTraceEntry[]
+  keyDecisions: ProcessKeyDecision[]
+  modelPerStage: ModelStageEntry[]
+  agentDisagreements: string[]
+  narrative?: string                               // the agent's reflective prose (optional)
+}
+
+// The Collaboration Depth scores — four dimensions, each an integer 1–5, plus a Zone
+// label. Produced by the collaboration_depth_agent. null when the data was too thin to
+// score (the chart then renders a text fallback).
+export interface CollaborationDepth {
+  delegationIntensity: number                      // 1-5
+  cognitiveVigilance: number                       // 1-5
+  cognitiveReallocation: number                    // 1-5
+  zoneClassification: number                       // 1-5 (overall placement)
+  zoneLabel: string                                // e.g. "Co-Creation"
+  rationale?: string
+}
+
+// The bundled, LLM-derived Stage-6 output persisted on PaperState. The Failure-Mode
+// Audit Log is NOT here — it is assembled locally at render time.
+export interface ProcessSummary {
+  selfReflection: AISelfReflection
+  collaborationDepth: CollaborationDepth | null    // null = chart shows the text fallback
+}
+
+// One row of the locally-assembled Failure-Mode Audit Log (FR-47): the mode, its verdict
+// at the 2.5 gate and at the 4.5 gate, and whether a bounded 2.5 override was applied
+// (with its permanent reason — FR-19 override surfacing). Built from integrityReports +
+// complianceHistory with NO LLM call.
+export interface FailureModeAuditEntry {
+  modeId: FailureModeId
+  modeName: string
+  verdict25: ModeVerdict | null                    // verdict at Stage 2.5 (null = no 2.5 run)
+  verdict45: ModeVerdict | null                    // verdict at Stage 4.5 (null = no 4.5 run)
+  overrideApplied: boolean                         // a bounded 2.5 override let this mode through
+  overrideReason?: string                          // the permanent rationale (when overridden)
 }
 
 // ── P12: one turn of the EIC Socratic coaching dialogue ──

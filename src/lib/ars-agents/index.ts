@@ -19,3 +19,6 @@ export { INTEGRITY_VERIFICATION_PROMPT } from './integrity_verification'
 export { CLAIM_AUDIT_PROMPT } from './claim_audit'
 // P16 Stage 5: formatter agent (verified_only) — deterministic impl in ars-client.formatPaper.
 export { FORMATTER_PROMPT } from './formatter'
+// P17 Stage 6: process-summary narrator + collaboration-depth observer (advisory only).
+export { PROCESS_SUMMARY_PROMPT } from './process_summary'
+export { COLLABORATION_DEPTH_PROMPT } from './collaboration_depth'
