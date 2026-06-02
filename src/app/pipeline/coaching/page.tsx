@@ -146,9 +146,9 @@ export default function CoachingPage() {
           />
         )}
 
-        {/* ── PROCEEDED: record the handoff + name the next phase. The Stage-4 revision
-            executor (P13) is not built yet, so we do NOT navigate to /pipeline/revise —
-            this mirrors how the P11 review page handled "coaching not built yet". ── */}
+        {/* ── PROCEEDED: record the handoff + advance to the Stage-4 revision executor.
+            P13 now builds /pipeline/revise, so the revision decisions navigate into the
+            live revision page (mirrors how the P11 review page enters coaching). ── */}
         {phase === 'proceeded' && (
           <div
             role="status"
@@ -161,9 +161,12 @@ export default function CoachingPage() {
               {paper.coachingRoundCount && paper.coachingRoundCount > 0
                 ? `You completed ${paper.coachingRoundCount} coaching round${paper.coachingRoundCount === 1 ? '' : 's'}.`
                 : 'You skipped coaching (0 rounds used).'}{' '}
-              The Stage-4 revision executor is built in P13; your coaching record is saved.
+              The Stage-4 revision agent will now rewrite the paper against the reviewers’ roadmap.
             </p>
             <div className="flex flex-col items-start gap-2 sm:flex-row">
+              <Button data-testid="enter-revision" onClick={() => router.push('/pipeline/revise')}>
+                Start Revision →
+              </Button>
               <Button variant="outline" onClick={() => router.push('/pipeline')}>
                 Back to pipeline
               </Button>

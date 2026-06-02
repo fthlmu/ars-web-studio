@@ -18,6 +18,8 @@ import {
   INTEGRITY_VERIFICATION_PROMPT,
   // P11 Stage 3: the bundled peer-reviewer prompt (reused, NOT re-bundled).
   PEER_REVIEWER_PROMPT,
+  // P13 Stage 4: the bundled revision-coach prompt (the REVISE executor).
+  REVISION_COACH_PROMPT,
 } from './ars-agents'
 // P9: the 5 deep-research agent prompts that make up the Stage-1 research chain.
 // (This module is created by the deep-research agent in parallel; same path/names.)
@@ -37,7 +39,9 @@ import {
   parseSchema3,
   parseSchema5,
   parseSchema6,
+  parseSchema7,
   parseSchema13,
+  extractJsonBlock,
   HandoffIncompleteError,
 } from './schemas'
 import type {
@@ -59,8 +63,15 @@ import type {
   // 5-reviewer review report (Schema 6) produced by the two-phase Sprint Contract.
   ScoringPlan,
   ReviewerScoreSet,
-  // P12 Stage 3→4 (Coaching): the advisory revision roadmap items the EIC coaches against.
+  // P12 Stage 3→4 (Coaching): the advisory revision roadmap items the EIC coaches against,
+  // plus one persisted coaching turn (fed into the P13 revision context).
   RoadmapItem,
+  CoachingMessage,
+  // P13 Stage 4 (Revision): the grouped roadmap (Schema 7), the per-section before→after
+  // Delta Report, and its rows — produced by runRevision().
+  RevisionRoadmap,
+  DeltaReport,
+  DeltaSection,
 } from './types'
 
 // ─── Core streaming primitive ────────────────────────────────────────────────
@@ -1366,4 +1377,271 @@ ${roadmapLines}
 
 Open the coaching dialogue now: greet the author briefly, then ask your FIRST Socratic question about the single highest-priority issue. One question only.
 `.trim()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P13: STAGE 4 — REVISION EXECUTOR (revision_coach_agent)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// After coaching, the revision_coach_agent REWRITES the paper. Unlike the EIC coach
+// (which only asked questions), this agent does the work: it reads the reviewers'
+// report, the structured roadmap, and the coaching dialogue, then returns (1) the
+// grouped Revision Roadmap (Schema 7) and (2) the REVISED sections. From those plus
+// the ORIGINAL draft, runRevision() builds the revised Schema-4 draft and a per-section
+// Delta Report (the actual word-diff is rendered later by DeltaReportView).
+//
+// IRON RULE (P13.7): this function NEVER mutates the original draft it is handed —
+// it returns a NEW revisedDraft, so a failed/abandoned revision leaves the source
+// intact and the Delta Report always has a stable "before".
+
+// One revised section as the agent returns it (before we reconcile it with the
+// original draft to recover sectionId / targetWords).
+interface RawRevisedSection {
+  heading: string
+  content: string
+  changed?: boolean
+  changeSummary?: string
+}
+
+// The full output of a revision run: the grouped roadmap, the revised Schema-4 draft,
+// and the Delta Report the UI diffs. Returned by runRevision().
+export interface RevisionResult {
+  roadmap: RevisionRoadmap
+  revisedDraft: PaperDraft
+  deltaReport: DeltaReport
+}
+
+// ─── Revision output contract appended to the revision agent's userMessage ──────
+//
+// One fenced json block carrying BOTH the grouped roadmap (parsed by parseSchema7)
+// and the revised sections (parsed locally). The agent rewrites against the roadmap;
+// software computes the diff — so we do NOT ask the agent for a diff.
+const CONTRACT_REVISION = `${OUTPUT_CONTRACT_INTRO}
+You are the revision executor. Using the reviewers' report, the revision roadmap, the
+coaching dialogue, and the current draft above, REWRITE the paper to address every
+must_fix item (and as many should_fix / consider items as are warranted). Then report
+both the roadmap you worked from AND your revised sections.
+Required JSON shape:
+{
+  "roadmap": {
+    "summary": string,                   // one-line framing of the revision
+    "mustFix":   [ { "id": string, "description": string, "reviewer": string, "type": "Major" | "Minor" | "Editorial", "targetSection": string, "suggestedAction": string } ],
+    "shouldFix": [ { "id": string, "description": string, "reviewer": string, "type": "Major" | "Minor" | "Editorial", "targetSection": string, "suggestedAction": string } ],
+    "consider":  [ { "id": string, "description": string, "reviewer": string, "type": "Major" | "Minor" | "Editorial", "targetSection": string, "suggestedAction": string } ]
+  },
+  "revisedSections": [                    // ONE object per section of the paper, in order, using the SAME headings as the draft above
+    { "heading": string,                  // must match the draft section heading
+      "content": string,                  // the FULL revised plain-text content of that section (rewrite where needed; copy verbatim where unchanged)
+      "changed": boolean,                 // true if you changed this section
+      "changeSummary": string }           // one sentence on what changed (or "no change")
+  ],
+  "revisionSummary": string               // a short paragraph describing the overall revision
+}`
+
+// Render the coaching dialogue as a readable transcript block for the agent (or a note
+// when coaching was skipped). EIC turns are the coach; user turns are the author.
+function coachingBlock(thread: CoachingMessage[]): string {
+  if (!thread || thread.length === 0) {
+    return '## Coaching dialogue\n(the author skipped coaching — none took place)'
+  }
+  const lines = thread
+    .map((m) => `${m.role === 'eic' ? 'EIC' : 'Author'}: ${m.content}`)
+    .join('\n\n')
+  return `## Coaching dialogue (Stage 3→4)\n${lines}`
+}
+
+// Normalise a heading for matching the agent's revised sections back to the original
+// draft sections: trim + collapse whitespace + lowercase. Two headings that differ
+// only in spacing/case still match the same original section.
+function normHeading(h: string): string {
+  return h.trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+// Pull the revised sections out of the raw agent reply. Throws HandoffIncompleteError
+// when the array is absent/empty or no item has both a heading and content — so a
+// reply that returned only the roadmap aborts (and the single upstream retry fires).
+function parseRevisedSections(raw: string): RawRevisedSection[] {
+  const data = extractJsonBlock(raw)
+  const arr =
+    typeof data === 'object' && data !== null
+      ? (data as Record<string, unknown>).revisedSections
+      : undefined
+  if (!Array.isArray(arr) || arr.length === 0) {
+    throw new HandoffIncompleteError('schema7', ['revisedSections'])
+  }
+  const out: RawRevisedSection[] = []
+  arr.forEach((rawItem) => {
+    if (typeof rawItem !== 'object' || rawItem === null) return
+    const r = rawItem as Record<string, unknown>
+    if (typeof r.heading !== 'string' || r.heading.trim().length === 0) return
+    if (typeof r.content !== 'string') return
+    const item: RawRevisedSection = { heading: String(r.heading), content: String(r.content) }
+    if (typeof r.changed === 'boolean') item.changed = r.changed
+    if (typeof r.changeSummary === 'string') item.changeSummary = String(r.changeSummary)
+    out.push(item)
+  })
+  if (out.length === 0) {
+    throw new HandoffIncompleteError('schema7', ['revisedSections (no valid item)'])
+  }
+  return out
+}
+
+// Reconcile the agent's revised sections with the ORIGINAL draft, producing the new
+// Schema-4 draft + the Delta Report. Pure: original is read, never mutated (P13.7).
+function buildRevisedDraftAndDelta(
+  config: PaperConfig,
+  original: PaperDraft,
+  revised: RawRevisedSection[],
+  revisionSummary: string,
+): { revisedDraft: PaperDraft; deltaReport: DeltaReport } {
+  // Index the revised sections by normalised heading for O(1) lookup.
+  const revisedByHeading = new Map<string, RawRevisedSection>()
+  for (const r of revised) revisedByHeading.set(normHeading(r.heading), r)
+
+  const draftSections: DraftSection[] = []
+  const deltaSections: DeltaSection[] = []
+  const matchedHeadings = new Set<string>()
+
+  // Walk the ORIGINAL sections in order — they define paper order and carry the
+  // bookkeeping (sectionId / targetWords) the agent does not echo back.
+  for (const orig of original.sections) {
+    const key = normHeading(orig.heading)
+    const match = revisedByHeading.get(key)
+    if (match) matchedHeadings.add(key)
+    const oldContent = orig.content
+    const newContent = match ? match.content : oldContent
+    // Trust the agent's `changed` flag when given; otherwise diff the text ourselves.
+    const changed = match
+      ? (typeof match.changed === 'boolean' ? match.changed : newContent.trim() !== oldContent.trim())
+      : false
+
+    draftSections.push({
+      sectionId: orig.sectionId,
+      heading: orig.heading,
+      targetWords: orig.targetWords,
+      content: newContent,
+      materialGapCount: countMaterialGaps(newContent),
+    })
+    const deltaRow: DeltaSection = {
+      heading: orig.heading,
+      changed,
+      oldContent,
+      newContent,
+    }
+    if (match?.changeSummary) deltaRow.changeSummary = match.changeSummary
+    deltaSections.push(deltaRow)
+  }
+
+  // Any revised section that did NOT match an original heading is a NEW section the
+  // agent added — append it (no "before"), so nothing the agent wrote is dropped.
+  for (const r of revised) {
+    const key = normHeading(r.heading)
+    if (matchedHeadings.has(key)) continue
+    draftSections.push({
+      sectionId: 'revised-' + key.replace(/[^a-z0-9]+/g, '-'),
+      heading: r.heading,
+      targetWords: getSectionWordCount(config.wordCount, config.paperType, r.heading),
+      content: r.content,
+      materialGapCount: countMaterialGaps(r.content),
+    })
+    const deltaRow: DeltaSection = {
+      heading: r.heading,
+      changed: true,
+      oldContent: '',
+      newContent: r.content,
+    }
+    if (r.changeSummary) deltaRow.changeSummary = r.changeSummary
+    deltaSections.push(deltaRow)
+  }
+
+  const wordCountTotal = draftSections.reduce((sum, s) => {
+    return sum + s.content.split(/\s+/).filter((w) => w.length > 0).length
+  }, 0)
+
+  const revisedDraft: PaperDraft = {
+    schemaId: 4,
+    versionLabel: 'paper_draft_revised',
+    sections: draftSections,
+    wordCountTotal,
+  }
+  const deltaReport: DeltaReport = {
+    sections: deltaSections,
+    changedCount: deltaSections.filter((d) => d.changed).length,
+    summary: revisionSummary,
+  }
+  return { revisedDraft, deltaReport }
+}
+
+/**
+ * Runs the Stage-4 revision. Streams the agent's reasoning through onChunk, forces a
+ * single JSON block (grouped roadmap + revised sections), parses both, then builds the
+ * revised Schema-4 draft and the Delta Report from the ORIGINAL draft (never mutated).
+ * Retries ONCE on a HandoffIncompleteError, then rethrows — the exact runOnce pattern
+ * runReviewPhase2 / runIntegrityGate use.
+ *
+ * @param config        - the Paper Configuration Record
+ * @param original      - the Schema-4 draft being revised (from buildPaperDraft) — read-only
+ * @param review        - the Schema-6 Review Report the revision must address
+ * @param coaching      - the persisted coaching thread (may be empty if skipped)
+ * @param onChunk       - called with each streamed text chunk (live UI updates)
+ * @param modelConfig   - which model to route to (optional; server defaults to Sonnet)
+ * @returns             - the roadmap + revised draft + delta report
+ */
+export async function runRevision(
+  config: PaperConfig,
+  original: PaperDraft,
+  review: ReviewerScoreSet,
+  coaching: CoachingMessage[],
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig,
+): Promise<RevisionResult> {
+  const userMessage = `
+You are the Stage-4 revision executor. A paper received a "${review.editorialDecision}" decision
+in peer review and has been coached through the issues. Rewrite the paper to address the
+reviewers' concerns and the revision roadmap, then report the roadmap and your revised sections.
+
+${configBlock(config)}
+
+${priorBlock('Peer Review Report (Schema 6)', review)}
+
+${coachingBlock(coaching)}
+
+${draftBlock(original)}
+
+${CONTRACT_REVISION}
+`.trim()
+
+  // One call = one parse attempt. Factored so the retry path is identical (EH-04).
+  const runOnce = async (): Promise<RevisionResult> => {
+    const raw = await callAgent(REVISION_COACH_PROMPT, userMessage, onChunk, modelConfig)
+    // Both parsers throw HandoffIncompleteError('schema7', …) on a gap → single retry.
+    const roadmap = parseSchema7(raw)
+    const revised = parseRevisedSections(raw)
+    // revisionSummary is best-effort prose; default to the roadmap summary or a stub.
+    const data = extractJsonBlock(raw)
+    const revisionSummary =
+      typeof data === 'object' &&
+      data !== null &&
+      typeof (data as Record<string, unknown>).revisionSummary === 'string'
+        ? String((data as Record<string, unknown>).revisionSummary)
+        : roadmap.summary ?? 'Revision completed.'
+    const { revisedDraft, deltaReport } = buildRevisedDraftAndDelta(
+      config,
+      original,
+      revised,
+      revisionSummary,
+    )
+    return { roadmap, revisedDraft, deltaReport }
+  }
+
+  try {
+    return await runOnce()
+  } catch (err) {
+    if (err instanceof HandoffIncompleteError) {
+      console.warn('[runRevision] schema7 handoff incomplete, retrying once:', err.message)
+      return await runOnce() // a second failure throws out of this function (rethrow)
+    }
+    // Network / server / non-handoff failure — surface to the caller (EH-04 Retry).
+    throw err
+  }
 }

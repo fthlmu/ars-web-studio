@@ -13,6 +13,7 @@ import type {
   PaperDraft,
   IntegrityReport,
   ReviewerScoreSet,
+  RevisionRoadmap,
   ScoringPlan,
 } from '@/lib/types'
 import { parseSchema1 } from './schema1'
@@ -21,12 +22,13 @@ import { parseSchema3 } from './schema3'
 import { parseSchema4 } from './schema4'
 import { parseSchema5 } from './schema5'
 import { parseSchema6 } from './schema6'
+import { parseSchema7 } from './schema7'
 import { parseSchema13 } from './schema13'
 
 // Which schema a given agent's output maps to.
 // schema1–3: P9 deep-research handoffs. schema4: P10 paper draft. schema5: P10
-// integrity report. schema6: P11 review report (Phase 2). schema13: P11 scoring
-// plan (Phase 1, paper-blind).
+// integrity report. schema6: P11 review report (Phase 2). schema7: P13 revision
+// roadmap. schema13: P11 scoring plan (Phase 1, paper-blind).
 export type SchemaId =
   | 'schema1'
   | 'schema2'
@@ -34,6 +36,7 @@ export type SchemaId =
   | 'schema4'
   | 'schema5'
   | 'schema6'
+  | 'schema7'
   | 'schema13'
 
 export { HandoffIncompleteError } from './errors'
@@ -43,6 +46,7 @@ export { parseSchema3 } from './schema3'
 export { parseSchema4 } from './schema4'
 export { parseSchema5 } from './schema5'
 export { parseSchema6 } from './schema6'
+export { parseSchema7 } from './schema7'
 export { parseSchema13 } from './schema13'
 
 // ── extractJsonBlock ─────────────────────────────────────────────────────────
@@ -165,7 +169,7 @@ function findLastBalancedObject(raw: string): string | null {
 export function parseSchema(
   raw: string,
   schemaId: SchemaId,
-): RQBrief | Bibliography | SynthesisReport | PaperDraft | IntegrityReport | ReviewerScoreSet | ScoringPlan {
+): RQBrief | Bibliography | SynthesisReport | PaperDraft | IntegrityReport | ReviewerScoreSet | RevisionRoadmap | ScoringPlan {
   switch (schemaId) {
     case 'schema1':
       return parseSchema1(raw)
@@ -179,6 +183,8 @@ export function parseSchema(
       return parseSchema5(raw)
     case 'schema6':
       return parseSchema6(raw)
+    case 'schema7':
+      return parseSchema7(raw)
     case 'schema13':
       return parseSchema13(raw)
     default: {

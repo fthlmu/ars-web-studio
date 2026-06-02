@@ -96,6 +96,25 @@ export interface PaperState {
   // Where the coaching UI is in its lifecycle. 'proceed-revision' is the handoff into
   // the P13 Stage-4 revision executor (Skip, cap-reached, or a user Proceed all land here).
   coachingStatus?: 'idle' | 'round-0' | 'in-progress' | 'cap-reached' | 'proceed-revision' | 'error'
+
+  // ── P13: Stage 4 (Revision) results ──
+  // Same DR-01 back-compat rule as every block above: ALL optional, so a paper
+  // saved under P0–P12 (which never ran the revision executor) still loads cleanly.
+  // Entered from the P12 coaching 'proceed-revision' handoff. The revision_coach_agent
+  // rewrites the draft against the reviewers' report + roadmap + coaching context.
+  //
+  // IRON RULE (P13.7): the ORIGINAL draft (the editor's `sections` above) is NEVER
+  // overwritten by this stage — the revised content lands in `revisedDraft` as a
+  // SEPARATE field, so a failed/abandoned revision always leaves the source intact
+  // and the Delta Report has a stable "before" to diff against.
+  revisionPlan?: RevisionRoadmap            // Schema 7 — the structured roadmap (must/should/consider)
+  revisedDraft?: PaperDraft                 // Schema 4 — the revised draft (separate from `sections`)
+  deltaReport?: DeltaReport                 // per-section before→after data the Delta Report view diffs
+  // Where the revision UI is in its lifecycle. Mirrors reviewStatus/coachingStatus above.
+  // 're-review' / 'final-gate' are the two FR-05/FR-33 exits (handoffs into P14 / P15).
+  revisionStatus?: 'idle' | 'running' | 'awaiting-approval' | 're-review' | 'final-gate' | 'error'
+  // revisionLoopCount (declared in the P11 block above) is the iron-rule loop counter:
+  // incremented on a revision Approve here; <2 routes to re-review, ==2 to the final gate.
 }
 
 // ── P12: one turn of the EIC Socratic coaching dialogue ──
@@ -358,6 +377,40 @@ export interface RoadmapItem {
   priority: 'must_fix' | 'should_fix' | 'consider'
   targetSection?: string               // which paper section it touches
   suggestedAction?: string             // the recommended fix
+}
+
+// ── P13: Stage 4 (Revision) handoff schema types ──
+// Schema 7 — the full, GROUPED Revision Roadmap the revision_coach_agent produces
+// from the reviewers' report. P11 already carried a flat advisory `RoadmapItem[]`;
+// here we group the same items by priority so the checklist can render must_fix first
+// (red, blocking-by-convention), then should_fix, then consider (both advisory).
+// Every item is a RoadmapItem (the type defined above) whose `priority` matches the
+// bucket it sits in. The parser (schema7.ts) enforces that grouping.
+export interface RevisionRoadmap {
+  mustFix: RoadmapItem[]      // priority === 'must_fix'   — the reviewers' blocking changes
+  shouldFix: RoadmapItem[]    // priority === 'should_fix' — strongly recommended
+  consider: RoadmapItem[]     // priority === 'consider'   — optional improvements
+  summary?: string            // the agent's one-line framing of the revision (optional)
+}
+
+// One section's before→after record for the Delta Report. We store the plain-text
+// OLD and NEW content (not a pre-computed diff) so the DeltaReportView can run the
+// word-level diff at render time with the `diff` library — keeping localStorage small.
+export interface DeltaSection {
+  heading: string             // the section heading (the match key between old and new)
+  changed: boolean            // true when oldContent !== newContent (the agent revised it)
+  oldContent: string          // the original section text (the "before")
+  newContent: string          // the revised section text (the "after")
+  changeSummary?: string      // the agent's note on WHAT changed in this section (optional)
+}
+
+// The whole Delta Report — one row per section plus a count + summary. Built locally
+// by runRevision() from the original draft vs the agent's revised sections; the agent
+// supplies per-section change summaries, the diff itself is computed in software.
+export interface DeltaReport {
+  sections: DeltaSection[]    // one entry per section, in paper order
+  changedCount: number        // how many sections actually changed (sections.filter(changed).length)
+  summary: string             // a human one-paragraph overview of the revision
 }
 
 // One dimension of the Phase-1 (paper-blind) scoring plan: what the reviewers
