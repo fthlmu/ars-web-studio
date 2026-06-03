@@ -139,8 +139,24 @@ export default function FinalIntegrityPage() {
 
     queueMicrotask(() => {
       setPaper(saved)
-      // Every visit re-runs the check against the CURRENT draft (it can change between
-      // visits via the editor). Re-running is the ONLY way past a FAIL (edit → re-run).
+      // P18.10 resume (NFR-11/FR-03): if a 4.5 verdict already exists, RESTORE it instead
+      // of re-running the agent on mount — reopening an awaiting-review/failed gate must
+      // NOT make an agent call. A FAIL renders with the export control absent (same report
+      // shape); the human re-runs explicitly (edit → re-run) to get past it. Only a
+      // genuinely fresh entry runs the gate here.
+      const latest45 = [...(saved.integrityReports ?? [])]
+        .reverse()
+        .find((r) => r.stage === '4.5')
+      if (
+        (saved.finalIntegrityStatus === 'awaiting-review' || saved.finalIntegrityStatus === 'failed') &&
+        latest45
+      ) {
+        setReport(latest45)
+        setPhase('awaiting-review')
+        return
+      }
+      // Every other entry re-runs the check against the CURRENT draft (it can change
+      // between visits via the editor).
       startGate()
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -178,9 +178,25 @@ export default function IntegrityPage() {
 
     queueMicrotask(() => {
       setPaper(saved)
-      // No FR-04-style skip here: every visit to the gate re-runs the check against
-      // the CURRENT draft (the draft can change between visits via the editor). The
-      // section-review gate on the pipeline page is what gates entry to this page.
+      // P18.10 resume (NFR-11/FR-03): if a verdict already exists for this gate, RESTORE
+      // it instead of re-running the agent — reopening an awaiting-review (or passed) gate
+      // must NOT make an agent call on mount. Only a fresh entry (the section-review
+      // "Approve Draft" set integrityStatus to 'running'/'idle'/'error', or a thrown EH-02)
+      // actually runs the check.
+      const latest25 = [...(saved.integrityReports ?? [])]
+        .reverse()
+        .find((r) => r.stage === STAGE_25)
+      if (saved.integrityStatus === 'passed') {
+        if (latest25) setReport(latest25)
+        setPhase('passed')
+        return
+      }
+      if (saved.integrityStatus === 'awaiting-review' && latest25) {
+        setReport(latest25)
+        setPhase('awaiting-review')
+        return
+      }
+      // Fresh entry from the draft gate (or an error/running left over) → run the check.
       startGate()
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
