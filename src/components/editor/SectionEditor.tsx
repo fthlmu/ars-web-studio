@@ -26,6 +26,9 @@ interface Props {
   outline: string
   completedSections: Section[]   // all other sections (for context when regenerating)
   onSave: (sectionId: string, html: string, wordCount: number) => void
+  // P18.9: when true, the Material Passport is STALE — an edit happened after a 2.5 PASS,
+  // so the integrity check must be re-run before peer review (FR-49). Render-only banner.
+  isStale?: boolean
 }
 
 // ─── Markdown → HTML conversion ───────────────────────────────────────────────
@@ -110,6 +113,7 @@ export function SectionEditor({
   outline,
   completedSections,
   onSave,
+  isStale = false,
 }: Props) {
   const [showMathDialog, setShowMathDialog] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
@@ -260,6 +264,18 @@ export function SectionEditor({
 
   return (
     <div className="flex flex-col h-full border rounded-lg overflow-hidden bg-background">
+
+      {/* P18.9 — STALE banner: editing after a 2.5 PASS invalidated the integrity check. */}
+      {isStale && (
+        <div
+          data-testid="stale-banner"
+          role="status"
+          aria-live="polite"
+          className="border-b border-red-300 bg-red-50 px-4 py-2 text-xs text-red-800 dark:bg-red-950/30 dark:text-red-300"
+        >
+          ⚠ Content changed after the integrity PASS — re-run the integrity check before peer review.
+        </div>
+      )}
 
       {/* Toolbar */}
       <Toolbar

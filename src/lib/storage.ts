@@ -12,14 +12,36 @@ const DRAFT_CONFIG_KEY = 'ars-draft-config'
 const MODEL_KEY = 'ars-selected-model'
 // P15: app-wide settings (NOT per-paper). Currently just the opt-in claim-audit flag.
 const SETTINGS_KEY = 'ars_global_settings'
+// P18 (IR-06): per-paper namespaced keys + a lightweight papers index. The "current"
+// paper still lives at STORAGE_KEY (the single working slot every existing page reads),
+// and savePaper MIRRORS it to its namespaced slot `ars_<id>_paper` + updates the index,
+// so the Previous Papers panel and per-paper delete work without rewriting every page.
+const PAPERS_INDEX_KEY = 'ars_papers_index'
+function paperKey(id: string): string {
+  return `ars_${id}_paper`
+}
 
-// Save the entire paper state to localStorage.
+// Save the entire paper state to localStorage. Also mirrors to the per-paper namespaced
+// slot and refreshes the papers index (P18.3/IR-06) so multiple papers can coexist.
 export function savePaper(state: PaperState): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    mirrorToNamespace(state)
   } catch (e) {
     // localStorage can throw if storage quota is exceeded (~5MB limit)
     console.error('Failed to save paper state:', e)
+  }
+}
+
+// Mirror a paper into its namespaced slot and update the index. Failures here are
+// non-fatal to the primary save (the current-slot write already succeeded), so they are
+// logged but swallowed — the index is a convenience surface, not the source of truth.
+function mirrorToNamespace(state: PaperState): void {
+  try {
+    localStorage.setItem(paperKey(state.id), JSON.stringify(state))
+    upsertPaperIndex(state)
+  } catch (e) {
+    console.error('Failed to mirror paper to namespaced slot:', e)
   }
 }
 
@@ -50,6 +72,7 @@ function isQuotaExceeded(e: unknown): boolean {
 export function savePaperChecked(state: PaperState): SaveResult {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    mirrorToNamespace(state)
     return { ok: true, quotaExceeded: false }
   } catch (e) {
     const quotaExceeded = isQuotaExceeded(e)
@@ -167,6 +190,96 @@ export function saveGlobalSettings(settings: GlobalSettings): void {
 // Generate a unique paper ID based on timestamp.
 export function generatePaperId(): string {
   return `paper-${Date.now()}`
+}
+
+// ── P18: per-paper namespace — index, list, delete, switch-current ─────────────
+// A compact summary stored in the index so the home "Previous Papers" panel can list
+// papers without parsing every full blob.
+export interface PaperSummary {
+  id: string
+  topic: string
+  paperType: string
+  updatedAt: string
+}
+
+function readIndex(): PaperSummary[] {
+  try {
+    const raw = localStorage.getItem(PAPERS_INDEX_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    return Array.isArray(parsed) ? (parsed as PaperSummary[]) : []
+  } catch (e) {
+    console.error('Failed to read papers index:', e)
+    return []
+  }
+}
+
+function writeIndex(list: PaperSummary[]): void {
+  try {
+    localStorage.setItem(PAPERS_INDEX_KEY, JSON.stringify(list))
+  } catch (e) {
+    console.error('Failed to write papers index:', e)
+  }
+}
+
+// Insert or update this paper's summary in the index (newest first by updatedAt).
+function upsertPaperIndex(state: PaperState): void {
+  const summary: PaperSummary = {
+    id: state.id,
+    topic: state.config?.topic ?? '(untitled)',
+    paperType: state.config?.paperType ?? '',
+    updatedAt: state.updatedAt,
+  }
+  const others = readIndex().filter((p) => p.id !== state.id)
+  const next = [summary, ...others].sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1))
+  writeIndex(next)
+}
+
+// List all saved papers (for the Previous Papers panel). Falls back to reconstructing a
+// single-entry index from the legacy current slot if the index is empty but a paper
+// exists (back-compat for papers saved before P18 added the index).
+export function listPapers(): PaperSummary[] {
+  const index = readIndex()
+  if (index.length > 0) return index
+  const current = loadPaper()
+  if (current) {
+    upsertPaperIndex(current)
+    return readIndex()
+  }
+  return []
+}
+
+// Delete one paper: its namespaced slot + index entry, and — if it is the current
+// working paper — the legacy current slot too (eviction path, NFR-08). Returns true on
+// success. EH-11: only the explicitly-targeted paper's artifacts are removed.
+export function deletePaper(id: string): boolean {
+  try {
+    localStorage.removeItem(paperKey(id))
+    writeIndex(readIndex().filter((p) => p.id !== id))
+    const current = loadPaper()
+    if (current && current.id === id) {
+      localStorage.removeItem(STORAGE_KEY)
+    }
+    return true
+  } catch (e) {
+    console.error('Failed to delete paper:', e)
+    return false
+  }
+}
+
+// Make a previously-saved paper the current working paper (load its namespaced blob into
+// the legacy current slot every page reads). Returns the paper, or null if not found.
+export function setCurrentPaper(id: string): PaperState | null {
+  try {
+    const raw = localStorage.getItem(paperKey(id))
+    if (!raw) return null
+    const state = JSON.parse(raw) as PaperState
+    localStorage.setItem(STORAGE_KEY, raw)
+    return state
+  } catch (e) {
+    console.error('Failed to switch current paper:', e)
+    return null
+  }
 }
 
 // Cheap, stable string hash of the Stage-1 research inputs (topic + research question).

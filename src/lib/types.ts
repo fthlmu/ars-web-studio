@@ -183,7 +183,39 @@ export interface PaperState {
   // complianceHistory at render time (no LLM call) and is therefore NOT stored here.
   processSummary?: ProcessSummary
   processSummaryStatus?: 'idle' | 'running' | 'done' | 'error'
+
+  // ── P18: Navigation + State Orchestration ──────────────────────────────────────
+  // Same DR-01 back-compat rule as every block above: ALL optional, so a paper saved
+  // under P0–P17 still loads cleanly — an old save just has none of these and the app
+  // derives them. These fields make the unified /pipeline router + sidebar + Material
+  // Passport possible WITHOUT retrofitting every stage page.
+  //
+  // The 12-checkpoint sidebar reads `checkpointIndex` (0..12): the count of cleared
+  // checkpoints. It is LIVE state — pipeline-router.ts derives it from the per-stage
+  // *Status fields and the orchestrator persists it, so the sidebar never re-computes
+  // from scratch and a reload restores the exact tracker position.
+  checkpointIndex?: number
+  // The Material Passport verification status (Schema 9). Written explicitly ONLY by the
+  // STALE-on-edit hook (passport.ts) — every other value is derived in schemas/schema9.ts
+  // from the integrity dates + complianceHistory, so the persisted field is just the
+  // STALE latch that survives a reload (FR-49). Exactly VERIFIED/UNVERIFIED/STALE.
+  materialVerification?: VerificationStatus
+  // The SHA-256 of the section text, recomputed by the STALE-on-edit hook after each edit
+  // (NFR-15 audit fingerprint). Recorded for the compliance trail; STALE detection itself
+  // is the edit-after-pass event, not a hash inequality (see passport.ts).
+  contentHash?: string
+  // Monotonic version label for the Material Passport (Schema 9), e.g. "paper_draft_v1".
+  // Bumped as the draft advances through revision loops; absent → defaults to v1.
+  versionLabel?: string
 }
+
+// ── P18: PipelineState — the orchestration view of a paper (DR-01) ──────────────
+// PipelineState IS a PaperState. The plan calls for `PipelineState extends PaperState`;
+// because the whole PaperState blob is what storage persists (and every stage page reads
+// PaperState), the P18 orchestration fields above live ON PaperState as OPTIONAL members
+// so old saves still load. This interface is the typed name the router/sidebar use to make
+// that intent explicit — it adds NO required fields, so it can never break a P0–P17 save.
+export type PipelineState = PaperState
 
 // ── P17: Stage 6 (Process Summary) types ──────────────────────────────────────
 // The AI Self-Reflection Report + the Collaboration Depth chart + the local
@@ -438,13 +470,52 @@ export interface ComplianceEntry {
   reason?: string             // REQUIRED when action === 'override' (the permanent override rationale)
 }
 
-// ── P15: Stage 4.5 (Final Integrity Gate) + Claim Audit types ──
-// The high-level pipeline phase. P15 only models the two states immediately around
-// the zero-tolerance final gate: 'running-final-gate' (the gate is executing / the
-// draft has not yet passed) and 'export-ready' (the 4.5 gate PASSED — export is now
-// permitted). P18 replaces this with the full 20-state PipelineStatus machine; until
-// then this narrow union is the contract the finalize screen reads.
-export type PipelineStatus = 'running-final-gate' | 'export-ready'
+// ── P18: the full 20-state pipeline status machine (FR-01) ──────────────────────
+// The single high-level phase the /pipeline router reads to decide which stage route
+// to render (gate-to-route map in pipeline-router.ts). P15 introduced a NARROW 2-state
+// version of this union (`running-final-gate` | `export-ready`); P18 WIDENS it to all
+// 20 states. Additive — every value P15 wrote is still a member, so old saves and P15
+// code keep working (DR-01). State-name convention (read it like a state machine):
+//   'running-*' / 'generating-*' — an agent is (or WAS) executing. NOT resumable on a
+//       cold reload (NFR-12): resume reverts these to the matching gate so the human
+//       re-runs rather than waiting on a dead in-flight stream.
+//   'awaiting-*' / 'coaching' — a human gate. Fully resumable: reopening lands on the
+//       exact gate with NO agent call on mount (FR-02, FR-03, NFR-11).
+//   'idle' (pre-generation, → /intake) · 'export-ready' (4.5 PASSED, export permitted) ·
+//   'error' (a stage surfaced an unrecoverable error; last route + banner).
+// Names match the UX gate-to-route map exactly. A single `coaching` value covers BOTH
+// the Stage-3→4 (max 8) and the Stage-3'→4' residual (max 5) coaching — the coaching
+// route self-selects the mode from the residualCoaching* fields.
+export type PipelineStatus =
+  | 'idle'
+  | 'running-research'
+  | 'awaiting-research-review'
+  | 'generating-outline'
+  | 'awaiting-outline-review'
+  | 'generating-sections'
+  | 'awaiting-section-review'
+  | 'running-integrity-gate'
+  | 'awaiting-integrity-review'
+  | 'running-peer-review'
+  | 'awaiting-peer-review'
+  | 'coaching'
+  | 'running-revision'
+  | 'awaiting-revision-review'
+  | 'running-re-review'
+  | 'awaiting-re-review'
+  | 'running-final-gate'
+  | 'awaiting-final-review'
+  | 'export-ready'
+  | 'error'
+
+// ── P18: Material Passport (Schema 9, DR-05) verification status ────────────────
+// EXACTLY three values — there is no fourth. An "override logged" indication is NOT a
+// status value; it is DERIVED from (an override record in complianceHistory) AND
+// (status !== 'VERIFIED') — never stored as an enum (FR-49, DR-05). See schemas/schema9.ts.
+//   VERIFIED   — a fresh, override-free integrity PASS covers the current content (<24 h)
+//   UNVERIFIED — never passed, a pass aged past 24 h with no edit, or a bounded override
+//   STALE      — content changed after a PASS; the integrity gate must be re-run
+export type VerificationStatus = 'VERIFIED' | 'UNVERIFIED' | 'STALE'
 
 // One finding from the opt-in Claim-Faithfulness Audit. Severity drives the formatter
 // REFUSE guard: a single HIGH-WARN removes the PDF/LaTeX export paths (Markdown stays).

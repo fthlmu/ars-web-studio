@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { loadPaper, savePaper } from '@/lib/storage'
 import { generateAbstract } from '@/lib/ars-client'
+import { markEditAfterPass, sectionContentForHash, sha256Hex } from '@/lib/passport'
 import type { PaperState } from '@/lib/types'
 
 // Dynamic import with ssr:false — prevents ProseMirror DOM errors during SSR
@@ -75,7 +76,7 @@ export default function EditorPage() {
     (sectionId: string, html: string, wc: number) => {
       setPaper((prev) => {
         if (!prev) return prev
-        const next: PaperState = {
+        const edited: PaperState = {
           ...prev,
           sections: prev.sections.map((s) =>
             s.id === sectionId
@@ -84,7 +85,24 @@ export default function EditorPage() {
           ),
           updatedAt: new Date().toISOString(),
         }
+        // P18.9 STALE-on-edit (FR-49): an edit after a 2.5 PASS invalidates the
+        // verification — flip the passport to STALE + log 'edit_after_pass'. Pure +
+        // idempotent (no-op if never passed or already STALE), so it's safe on every save.
+        const next = markEditAfterPass(edited, edited.updatedAt)
         savePaper(next)
+
+        // Recompute and store the SHA-256 of the current content (fire-and-forget). The
+        // STALE flip above does not wait on the hash — the badge updates this render — but
+        // we persist the new fingerprint so a later re-run/compare has an accurate hash.
+        void sha256Hex(sectionContentForHash(next.sections)).then((hash) => {
+          const current = loadPaper()
+          if (current && current.id === next.id && current.contentHash !== hash) {
+            savePaper({ ...current, contentHash: hash })
+          }
+        }).catch((e) => {
+          console.error('Failed to recompute content hash after edit:', e)
+        })
+
         return next
       })
     },
@@ -239,6 +257,7 @@ export default function EditorPage() {
               outline={paper.outline}
               completedSections={paper.sections.filter((s) => s.id !== activeSection.id)}
               onSave={handleSave}
+              isStale={paper.materialVerification === 'STALE'}
             />
           </div>
         ) : (
