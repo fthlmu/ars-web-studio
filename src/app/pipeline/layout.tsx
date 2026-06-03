@@ -76,7 +76,7 @@ export default function PipelineLayout({ children }: { children: React.ReactNode
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 lg:flex-row">
-      <aside className="lg:w-64 lg:shrink-0">
+      <aside className="hidden sm:block lg:w-64 lg:shrink-0">
         <div className="lg:sticky lg:top-6">
           <PipelineSidebar paper={paper} />
         </div>

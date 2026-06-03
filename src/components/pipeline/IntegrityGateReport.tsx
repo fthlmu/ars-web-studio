@@ -211,7 +211,7 @@ export function IntegrityGateReport({ report, decision, onProceed, children }: P
           <h3 id="modes-heading" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground mb-2">
             Failure-Mode Checks
           </h3>
-          <div className="rounded-md border">
+          <div className="overflow-x-auto rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow>
