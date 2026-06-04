@@ -103,13 +103,11 @@ test.describe('P19.8 — Adversarial bypass audit (iron rules)', () => {
 
   test('export-ready paper: export-button IS present after legit 4.5 PASS', async ({ page }) => {
     // Positive control: a paper with all gates properly passed should show the
-    // export UI. This confirms the test infra works (we can see export-button when
-    // it SHOULD be there).
+    // export UI. This confirms the test infra works (we can see export UI when
+    // it SHOULD be there). Go directly to finalize: visiting /pipeline/final-integrity
+    // with blockApi() installed intentionally aborts any accidental agent call and can
+    // mutate the seeded state into the final-gate error path, which is not this test's goal.
     await seedPaper(page, paperAt_4_5_pass_export_ready())
-    await page.goto('/pipeline/final-integrity')
-
-    // After seeding as export-ready, the final-integrity page redirects (passed state).
-    // Navigate to finalize which is the proper export screen.
     await page.goto('/pipeline/finalize')
     await expect(
       page.locator('[data-testid="integrity-seal"], [data-testid="format-picker"]').first()

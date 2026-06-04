@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node -e \"const input = process.env.CLAUDE_TOOL_INPUT || ''; if (input.includes('.env.local')) { console.error('BLOCKED: Do not edit .env.local — edit it manually in your text editor.'); process.exit(1); }\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"D:\\OneDrive\\AI_Brain_Fathul\\projects\\vibe-code-paper-generator\\projects\\ars-web-studio\" && pnpm lint --fix 2>&1 | tail -5"
+          }
+        ]
+      }
+    ]
+  }
+}
