@@ -119,6 +119,11 @@ export interface CallAgentOptions {
   // guard is skipped (back-compat). dataAccessLevel labels what the agent may see;
   // agentId + pipelineStatus tell the server whether this is a legal call point.
   access?: { dataAccessLevel: 'raw' | 'verified_only'; agentId: string; pipelineStatus: string }
+  // Called with each reasoning chunk when adaptive thinking is enabled (Sonnet 4.6+
+  // with effort set). The thinking text is separate from the main output — it is
+  // Claude showing its work before answering, not part of the paper content.
+  // Callers that don't pass this simply ignore the thinking frames.
+  onThinking?: (text: string) => void
 }
 
 /**
@@ -184,7 +189,7 @@ export async function callAgent(
       const payload = line.slice(6).trim()
       if (payload === '[DONE]') break
 
-      let parsed: { text?: string; error?: string; progress?: ResearchProgress }
+      let parsed: { text?: string; error?: string; progress?: ResearchProgress; thinking?: string }
       try {
         parsed = JSON.parse(payload)
       } catch {
@@ -194,6 +199,12 @@ export async function callAgent(
       // P9: a 'progress' frame means the server is reporting "Agent N of 5" (IR-04).
       if (parsed.progress && opts?.onProgress) {
         opts.onProgress(parsed.progress)
+      }
+      // Adaptive thinking frame: Claude is reasoning before answering. Forward it to
+      // the caller's onThinking callback if provided — it does NOT go into fullText
+      // so it never ends up in the saved paper content.
+      if (parsed.thinking && opts?.onThinking) {
+        opts.onThinking(parsed.thinking)
       }
       if (parsed.text) {
         fullText += parsed.text
@@ -248,7 +259,8 @@ export async function generateSection(
   targetSectionHeading: string,
   targetWordCount: number,
   onChunk: (text: string) => void,
-  modelConfig?: ModelConfig
+  modelConfig?: ModelConfig,
+  userInstructions?: string[]
 ): Promise<string> {
   // Build context from already-completed sections
   const priorContent =
@@ -257,6 +269,11 @@ export async function generateSection(
           .map((s) => `## ${s.heading}\n\n${stripHtml(s.content)}`)
           .join('\n\n---\n\n')
       : '(No sections written yet — this is the first section.)'
+
+  // P20: if the user provided instructions via the chat panel, include them
+  const instructionBlock = userInstructions && userInstructions.length > 0
+    ? `\n\n## User Instructions\nThe user has provided these specific instructions for this section:\n${userInstructions.map((i, idx) => `${idx + 1}. ${i}`).join('\n')}\nIncorporate these instructions into your writing.`
+    : ''
 
   const userMessage = `
 You are writing one section of an academic paper. Here is the full context:
@@ -283,7 +300,7 @@ Requirements:
 - Every factual claim must include a citation placeholder: [Author, Year] or [1] for IEEE
 - Do NOT write any other section — only "${targetSectionHeading}"
 - Output clean markdown (## for section heading, ### for subsections)
-`.trim()
+${instructionBlock}`.trim()
 
   return callAgent(DRAFT_WRITER_PROMPT, userMessage, onChunk, modelConfig)
 }

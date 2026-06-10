@@ -309,12 +309,18 @@ export interface ModelConfig {
   baseURL?: string   // openai-compatible only. Ollama: http://localhost:11434/v1 ; LM Studio: http://localhost:1234/v1
   apiKey?: string    // openai-compatible only. Use 'local' for Ollama/LM Studio. Do NOT put real cloud keys in presets.
   label: string      // display name shown in the model dropdown
+  // Anthropic only. Controls how much Claude thinks before answering.
+  // Low = fast & cheap; xhigh = slow & thorough. Only supported on Sonnet 4.6+ and Opus 4.7+.
+  // When set, adaptive thinking is also enabled (Claude shows its reasoning progress).
+  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 }
 
 // The presets shown in the model dropdown. Order matters — index 0 is the default.
 // (Cloud secrets like a real OpenAI/Anthropic key are NEVER stored here; the server
 // supplies those from environment variables. Local models use the literal key 'local'.)
 export const DEFAULT_MODELS: ModelConfig[] = [
+  { provider: 'anthropic', model: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Anthropic, recommended)', effort: 'high' },
+  { provider: 'anthropic', model: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Anthropic, most capable)', effort: 'high' },
   { provider: 'anthropic', model: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5 (Anthropic)' },
   { provider: 'anthropic', model: 'claude-haiku-4-5', label: 'Claude Haiku 4.5 (Anthropic, fast)' },
   { provider: 'openai-compatible', model: 'llama3.1:8b', baseURL: 'http://localhost:11434/v1', apiKey: 'local', label: 'Llama 3.1 8B (Ollama, local)' },
@@ -689,4 +695,21 @@ export interface ScoringPlan {
 export interface ReviewResult {
   scoringPlan: ScoringPlan
   reviewReport: ReviewerScoreSet
+}
+
+// ── Agent Chat (P20) ──────────────────────────────────────────────────────────
+
+export interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  timestamp: string
+  /** Which pipeline stage this message was sent from */
+  stage?: string
+}
+
+export interface ChatThread {
+  messages: ChatMessage[]
+  /** Pending user instructions to include in the next agent call */
+  pendingInstructions: string[]
 }

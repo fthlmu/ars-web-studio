@@ -13,13 +13,17 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { Textarea } from '@/components/ui/textarea'
 import { Progress } from '@/components/ui/progress'
+
 import { PipelineStepper, PipelineStage } from '@/components/pipeline/PipelineStepper'
 import { SectionStream } from '@/components/pipeline/SectionStream'
 import { SectionReviewGate } from '@/components/pipeline/SectionReviewGate'
+import { AgentProgressPanel } from '@/components/pipeline/AgentProgressPanel'
+import { OutlineAccordion } from '@/components/pipeline/OutlineAccordion'
 import { loadPaper, savePaper, loadModelConfig } from '@/lib/storage'
 import { generateOutline, generateSection, getSectionWordCount } from '@/lib/ars-client'
+import { consumePendingInstructions, loadChatThread, saveChatThread } from '@/lib/chat-persistence'
+import { stripAgentNotes } from '@/lib/strip-agent-notes'
 import type { PaperState, Section, ModelConfig } from '@/lib/types'
 
 // ─── Section heading parser ───────────────────────────────────────────────────
@@ -125,9 +129,11 @@ export default function WritePage() {
           : undefined,
       },
       {
-        id:     'approval',
-        label:  'Outline Review',
-        status: state.outlineApproved ? 'done' : state.outline ? 'active' : 'pending',
+        id:          'approval',
+        label:       'Outline Review',
+        status:      state.outlineApproved ? 'done' : state.outline ? 'active' : 'pending',
+        activeLabel: 'awaiting review',
+        hint:        'Review the outline below, then click Approve & Start Writing',
       },
     ]
 
@@ -195,6 +201,24 @@ export default function WritePage() {
         accumulatedOutline += chunk
         setStreamingText((prev) => prev + chunk)
       }, modelConfigRef.current)
+
+      // P20: strip agent notes from the outline; redirect to chat panel
+      const { content: cleanOutline, notes: outlineNotes } = stripAgentNotes(accumulatedOutline)
+      accumulatedOutline = cleanOutline
+      if (outlineNotes.length > 0) {
+        const paperId = paperRef.current?.id ?? 'default'
+        const thread = loadChatThread(paperId)
+        for (const note of outlineNotes) {
+          thread.messages.push({
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            role: 'assistant',
+            content: `📝 Agent note (Outline): ${note}`,
+            timestamp: new Date().toISOString(),
+            stage: 'write',
+          })
+        }
+        saveChatThread(paperId, thread)
+      }
 
       outlineRef.current = accumulatedOutline
       setOutlineText(accumulatedOutline)
@@ -285,6 +309,9 @@ export default function WritePage() {
 
       let content = ''
       try {
+        // P20: consume any pending instructions from the chat panel
+        const userInstructions = consumePendingInstructions(paperRef.current?.id ?? 'default')
+
         content = await generateSection(
           state.config,
           outline,
@@ -295,8 +322,27 @@ export default function WritePage() {
             content += chunk
             setStreamingText((prev) => prev + chunk)
           },
-          modelConfigRef.current
+          modelConfigRef.current,
+          userInstructions.length > 0 ? userInstructions : undefined
         )
+
+        // P20: strip agent notes from the generated content; redirect to chat panel
+        const { content: cleanContent, notes } = stripAgentNotes(content)
+        content = cleanContent
+        if (notes.length > 0) {
+          const paperId = paperRef.current?.id ?? 'default'
+          const thread = loadChatThread(paperId)
+          for (const note of notes) {
+            thread.messages.push({
+              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              role: 'assistant',
+              content: `📝 Agent note (${section.heading}): ${note}`,
+              timestamp: new Date().toISOString(),
+              stage: 'write',
+            })
+          }
+          saveChatThread(paperId, thread)
+        }
 
         const completed: Section = {
           ...section,
@@ -499,14 +545,27 @@ export default function WritePage() {
           </p>
         </div>
 
-        {/* Section progress bar — only shown during section generation */}
+        {/* Outline generation progress — indeterminate, shown while outline streams in */}
+        {activeSection === 'outline' && (
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            <span className="animate-pulse text-blue-500 font-medium">Generating outline…</span>
+            {streamingText && (
+              <span className="tabular-nums">{countWords(streamingText)} words so far</span>
+            )}
+          </div>
+        )}
+
+        {/* Section progress bar — shown during section generation */}
         {outlineApproved && totalSections > 0 && !isDone && (
           <div className="space-y-1.5">
             <div className="flex justify-between text-xs text-muted-foreground">
               <span>Sections complete</span>
-              <span>{doneCount} / {totalSections}</span>
+              <span className="tabular-nums font-medium">
+                {doneCount} / {totalSections}
+                <span className="ml-1 text-blue-500">({Math.round(progress)}%)</span>
+              </span>
             </div>
-            <Progress value={progress} className="h-1.5" />
+            <Progress value={progress} className="h-2" />
           </div>
         )}
 
@@ -517,6 +576,25 @@ export default function WritePage() {
           </h2>
           <PipelineStepper stages={phases} />
         </div>
+
+        {/* Agent progress panel — visible whenever AI is actively generating.
+            key={activeSection} remounts the panel on each new generation so its
+            elapsed timer resets to 0 cleanly without setState in an effect. */}
+        <AgentProgressPanel
+          key={activeSection ?? 'idle'}
+          isActive={activeSection !== null}
+          agentName={activeSection === 'outline' ? 'Structure Architect' : 'Draft Writer'}
+          taskLabel={
+            activeSection === 'outline'
+              ? 'Generating paper outline…'
+              : activeSection
+                ? `Writing: ${activeSection}`
+                : ''
+          }
+          streamingText={streamingText}
+          totalSections={outlineApproved && totalSections > 0 ? totalSections : undefined}
+          completedSections={outlineApproved && totalSections > 0 ? doneCount : undefined}
+        />
 
         {/* Outline error banner */}
         {outlineError && !outlineApproved && (
@@ -542,30 +620,46 @@ export default function WritePage() {
               {activeSection === 'outline' ? 'Generating Outline…' : 'Review & Edit Outline'}
             </h2>
 
-            <Textarea
-              value={outlineText}
-              onChange={(e) => {
-                setOutlineText(e.target.value)
-                outlineRef.current = e.target.value
-              }}
-              placeholder="Outline will appear here as it is generated…"
-              rows={16}
-              className="font-mono text-sm resize-none"
-              readOnly={activeSection === 'outline'}
-              aria-live="polite"
-              aria-label="Paper outline"
-            />
-
-            {/* Approval gate — only shown when outline is ready and not actively generating */}
+            {/* Instruction callout — shown once outline is ready, guides the user */}
             {outlineText && activeSection !== 'outline' && (
-              <div className="flex items-center gap-3 pt-1">
-                <p className="text-sm text-muted-foreground flex-1">
-                  Review the outline above. You can edit section titles or order before approving.
+              <div className="rounded-md border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/20 px-4 py-3 flex items-start gap-3">
+                <span className="text-lg shrink-0 mt-0.5">📋</span>
+                <p className="flex-1 text-sm text-amber-800 dark:text-amber-200 leading-relaxed">
+                  Your outline is ready. <strong>Click any section to edit it inline.</strong>{' '}
+                  When you are happy with the structure, click{' '}
+                  <strong>Approve &amp; Start Writing</strong> to begin generating the full paper.
                 </p>
-                <Button onClick={handleApproveOutline} className="shrink-0">
-                  Approve & Start Writing →
+                <Button
+                  onClick={handleApproveOutline}
+                  size="sm"
+                  className="shrink-0 self-center"
+                >
+                  Approve &amp; Start Writing →
                 </Button>
               </div>
+            )}
+
+            {/* While generating: streaming preview. After done: structured accordion. */}
+            {activeSection === 'outline' || !outlineText ? (
+              <div
+                className="min-h-[12rem] rounded-md border bg-muted/10 px-4 py-3 font-mono text-sm whitespace-pre-wrap leading-relaxed text-foreground/80 overflow-y-auto"
+                aria-live="polite"
+                aria-label="Outline being generated"
+              >
+                {outlineText || <span className="text-muted-foreground italic">Outline will appear here as it is generated…</span>}
+                {activeSection === 'outline' && (
+                  <span className="inline-block w-0.5 h-4 bg-blue-400 ml-0.5 animate-pulse align-middle" />
+                )}
+              </div>
+            ) : (
+              <OutlineAccordion
+                outline={outlineText}
+                onChange={(newText) => {
+                  setOutlineText(newText)
+                  outlineRef.current = newText
+                }}
+                readOnly={false}
+              />
             )}
           </div>
         )}

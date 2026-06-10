@@ -23,8 +23,10 @@ import {
   deriveCheckpointIndex,
   isRunningStatus,
   revertRunningStatus,
+  pipelineStatusLabel,
 } from '@/lib/pipeline-router'
 import { PipelineSidebar } from '@/components/pipeline/PipelineSidebar'
+import { AgentChatPanel } from '@/components/pipeline/AgentChatPanel'
 import type { PaperState } from '@/lib/types'
 
 export default function PipelineLayout({ children }: { children: React.ReactNode }) {
@@ -82,6 +84,20 @@ export default function PipelineLayout({ children }: { children: React.ReactNode
         </div>
       </aside>
       <div className="min-w-0 flex-1">{children}</div>
+      <AgentChatPanel
+        paperId={paper.id ?? 'default'}
+        context={{
+          topic: paper.config?.topic,
+          paperType: paper.config?.paperType,
+          outline: paper.outline,
+          completedSections: paper.sections
+            ?.filter((s) => s.status === 'done' || s.status === 'edited')
+            .map((s) => `## ${s.heading}\n${s.content}`),
+          currentStage: paper.pipelineStatus
+            ? pipelineStatusLabel(paper.pipelineStatus)
+            : undefined,
+        }}
+      />
     </div>
   )
 }
