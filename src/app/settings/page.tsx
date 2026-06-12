@@ -25,6 +25,15 @@ import {
   saveGlobalSettings,
 } from '@/lib/storage'
 
+const EFFORT_OPTIONS: { value: ModelConfig['effort'] | ''; label: string; description: string }[] = [
+  { value: '',     label: 'Auto (default)',  description: 'Model decides — no explicit effort set' },
+  { value: 'low',  label: 'Low',             description: 'Fastest & cheapest. Good for simple tasks.' },
+  { value: 'medium', label: 'Medium',        description: 'Balanced. Good for most sections.' },
+  { value: 'high', label: 'High',            description: 'Thorough. Good default for academic writing.' },
+  { value: 'xhigh', label: 'Extra High',     description: 'Best for research + complex reasoning stages.' },
+  { value: 'max',  label: 'Max',             description: 'Maximum quality. Slower and more expensive.' },
+]
+
 export default function SettingsPage() {
   const [current, setCurrent] = useState<ModelConfig>(DEFAULT_MODELS[0])
 
@@ -44,6 +53,24 @@ export default function SettingsPage() {
       setClaimAuditEnabled(loadGlobalSettings().claimAuditEnabled)
     })
   }, [])
+
+  // When the user switches preset model via ModelSelector, preserve the current effort
+  // setting instead of losing it (preset configs in DEFAULT_MODELS don't carry effort).
+  function handleModelChange(config: ModelConfig) {
+    const withEffort: ModelConfig = current.effort
+      ? { ...config, effort: current.effort }
+      : config
+    saveModelConfig(withEffort)
+    setCurrent(withEffort)
+  }
+
+  // Effort change: update the current model config and immediately persist it.
+  function handleEffortChange(value: string) {
+    const effort = value as ModelConfig['effort'] | undefined
+    const updated: ModelConfig = { ...current, effort: effort || undefined }
+    saveModelConfig(updated)
+    setCurrent(updated)
+  }
 
   // Persist the claim-audit toggle immediately on change (settings are app-wide).
   function onClaimAuditChange(enabled: boolean) {
@@ -83,9 +110,55 @@ export default function SettingsPage() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <ModelSelector className="w-full" onChange={setCurrent} />
+          <ModelSelector className="w-full" onChange={handleModelChange} />
         </CardContent>
       </Card>
+
+      {/* Effort control — only shown for Anthropic models (Sonnet 4.6+ / Opus 4.7+).
+          Effort controls how much Claude thinks before answering. Higher = slower but
+          more thorough. When set, adaptive thinking is automatically enabled so the
+          model streams its reasoning process before generating the paper content. */}
+      {current.provider === 'anthropic' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Thinking effort</CardTitle>
+            <CardDescription>
+              How deeply Claude reasons before writing. Only works with Sonnet 4.6 and
+              Opus 4.7+. Higher effort = better quality, more tokens, slower response.
+              When set, Claude will show its reasoning process as it works.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="space-y-2">
+              <Label htmlFor="effort-select">Effort level</Label>
+              <select
+                id="effort-select"
+                data-testid="effort-select"
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
+                value={current.effort ?? ''}
+                onChange={(e) => handleEffortChange(e.target.value)}
+              >
+                {EFFORT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {current.effort && (
+              <p className="text-xs text-muted-foreground">
+                {EFFORT_OPTIONS.find((o) => o.value === current.effort)?.description}
+              </p>
+            )}
+            {!current.effort && (
+              <p className="text-xs text-muted-foreground">
+                No effort set — model uses its default behavior. Recommended: set to{' '}
+                <strong>High</strong> for academic paper writing.
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       {/* P15 — opt-in Claim-Faithfulness Audit (ARS_CLAIM_AUDIT). Default OFF. */}
       <Card>

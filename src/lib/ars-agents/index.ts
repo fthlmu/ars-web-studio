@@ -4,6 +4,9 @@
 
 export { STRUCTURE_ARCHITECT_PROMPT } from './structure_architect'
 export { DRAFT_WRITER_PROMPT }        from './draft_writer'
+// FP-1: web-adapted writer/architect prompts (clean-prose-only; originals kept untouched).
+export { DRAFT_WRITER_WEB_PROMPT }        from './draft_writer_web'
+export { STRUCTURE_ARCHITECT_WEB_PROMPT } from './structure_architect_web'
 export { CITATION_COMPLIANCE_PROMPT } from './citation_compliance'
 export { ABSTRACT_BILINGUAL_PROMPT }  from './abstract_bilingual'
 export { REVISION_COACH_PROMPT }      from './revision_coach'

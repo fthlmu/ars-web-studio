@@ -12,7 +12,7 @@ import dynamic from 'next/dynamic'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { loadPaper, savePaper } from '@/lib/storage'
-import { generateAbstract } from '@/lib/ars-client'
+import { writeAbstract, PaperContentError } from '@/lib/ars-client'
 import { markEditAfterPass, sectionContentForHash, sha256Hex } from '@/lib/passport'
 import type { PaperState } from '@/lib/types'
 
@@ -117,13 +117,19 @@ export default function EditorPage() {
     setShowAbstractPanel(true)
 
     try {
-      await generateAbstract(
+      // FP-1: the raw stream feeds the live preview; the persisted/displayed abstract is the
+      // extracted + sanitized result (no quality-report tables or markers in the paper text).
+      const result = await writeAbstract(
         paper.config,
         paper.sections,
         (chunk) => setAbstractText((prev) => prev + chunk)
       )
+      setAbstractText(result.content)
     } catch (err) {
-      setAbstractText(`Error: ${err instanceof Error ? err.message : String(err)}`)
+      const reason = err instanceof PaperContentError
+        ? `the model returned non-abstract content (${err.reason})`
+        : err instanceof Error ? err.message : String(err)
+      setAbstractText(`Error: ${reason}`)
     } finally {
       setIsGeneratingAbstract(false)
     }

@@ -17,7 +17,7 @@ import 'katex/dist/katex.min.css'
 import { Toolbar } from './Toolbar'
 import { MaterialGapHighlight } from '@/lib/editor/material-gap-mark'
 import { Button } from '@/components/ui/button'
-import { generateSection, getSectionWordCount, stripHtml } from '@/lib/ars-client'
+import { writeSection, PaperContentError, getSectionWordCount, stripHtml } from '@/lib/ars-client'
 import type { PaperConfig, Section } from '@/lib/types'
 
 interface Props {
@@ -215,7 +215,9 @@ export function SectionEditor({
 
     let accumulated = ''
     try {
-      const content = await generateSection(
+      // FP-1: regenerate goes through the extract → sanitize → validate channel too, so a
+      // regenerated section is exactly as clean as a first-pass one (no metadata/marker leak).
+      const result = await writeSection(
         config,
         outline,
         completedSections.filter((s) => s.id !== section.id),
@@ -231,7 +233,7 @@ export function SectionEditor({
           )
         }
       )
-      const html = toHtml(content)
+      const html = toHtml(result.content)
       editor.commands.setContent(html, { emitUpdate: false })
       migrateMathStrings(editor)
       const finalHtml = editor.getHTML()
@@ -243,7 +245,10 @@ export function SectionEditor({
       if (previousContent) {
         editor.commands.setContent(previousContent, { emitUpdate: false })
       }
-      alert(`Regeneration failed: ${err instanceof Error ? err.message : String(err)}`)
+      const reason = err instanceof PaperContentError
+        ? `the model returned non-paper content (${err.reason})`
+        : err instanceof Error ? err.message : String(err)
+      alert(`Regeneration failed: ${reason}`)
     } finally {
       setIsRegenerating(false)
       setRegenStream('')
