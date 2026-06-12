@@ -1,8 +1,10 @@
 import { test, expect } from '@playwright/test'
 
-// P20 — Agent Chat Panel E2E tests.
-// Verifies the collapsible chat panel renders, opens, accepts input,
-// displays messages (mocked API), and persists on refresh.
+// P20 — Agent Chat Panel E2E tests, updated for FP-2.
+// FP-2 promotes the chat from a floating-collapsed panel to a PERSISTENT docked pane on wide
+// screens (the floating panel remains the mobile fallback). These verify the docked pane
+// renders, accepts input, shows messages (mocked API), persists on refresh, and that the
+// floating fallback still works on a narrow viewport.
 
 test.describe('Agent Chat Panel', () => {
   test.beforeEach(async ({ page }) => {
@@ -34,22 +36,25 @@ test.describe('Agent Chat Panel', () => {
     await page.goto('/pipeline/write')
   })
 
-  test('shows floating chat button (collapsed by default)', async ({ page }) => {
-    const toggle = page.getByTestId('chat-toggle')
-    await expect(toggle).toBeVisible()
-    // Panel should NOT be visible
-    await expect(page.getByTestId('chat-panel')).not.toBeVisible()
+  test('renders the docked orchestrator pane by default (desktop)', async ({ page }) => {
+    await expect(page.getByTestId('orchestrator-pane')).toBeVisible()
+    await expect(page.getByTestId('chat-input')).toBeVisible()
+    // No floating toggle on desktop — the pane is always open.
+    await expect(page.getByTestId('chat-toggle')).toHaveCount(0)
   })
 
-  test('opens chat panel on button click', async ({ page }) => {
-    await page.getByTestId('chat-toggle').click()
-    const panel = page.getByTestId('chat-panel')
-    await expect(panel).toBeVisible()
+  test('floating panel still works on a narrow viewport', async ({ page }) => {
+    await page.setViewportSize({ width: 480, height: 900 })
+    await page.goto('/pipeline/write')
+
+    const toggle = page.getByTestId('chat-toggle')
+    await expect(toggle).toBeVisible()
+    await expect(page.getByTestId('chat-panel')).not.toBeVisible()
+    await toggle.click()
+    await expect(page.getByTestId('chat-panel')).toBeVisible()
   })
 
   test('accepts user input and shows message with mocked response', async ({ page }) => {
-    await page.getByTestId('chat-toggle').click()
-
     // Mock the /api/chat endpoint
     await page.route('**/api/chat', async (route) => {
       const body = 'data: {"text":"Got it, I will make it more formal."}\n\ndata: [DONE]\n\n'
@@ -72,8 +77,6 @@ test.describe('Agent Chat Panel', () => {
   })
 
   test('persists chat on refresh', async ({ page }) => {
-    await page.getByTestId('chat-toggle').click()
-
     await page.route('**/api/chat', async (route) => {
       const body = 'data: {"text":"Understood."}\n\ndata: [DONE]\n\n'
       await route.fulfill({
@@ -88,14 +91,10 @@ test.describe('Agent Chat Panel', () => {
     await page.getByTestId('chat-send').click()
     await expect(page.getByText('Understood.')).toBeVisible()
 
-    // Refresh the page
+    // Refresh the page — the docked pane persists and restores the thread from localStorage.
     await page.reload()
 
-    // Panel preference was saved as open
-    const panel = page.getByTestId('chat-panel')
-    await expect(panel).toBeVisible()
-
-    // Messages should persist from localStorage
+    await expect(page.getByTestId('orchestrator-pane')).toBeVisible()
     await expect(page.getByText('Add more references')).toBeVisible()
     await expect(page.getByText('Understood.')).toBeVisible()
   })

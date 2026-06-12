@@ -45,8 +45,10 @@ test.describe('P19.2 — Blocking gate enforcement', () => {
 
     await expect(page.locator('[role="alert"]:has-text("FAILED")')).toBeVisible({ timeout: 10_000 })
 
-    // No override textarea (IntegrityOverride renders a textarea for the reason).
-    await expect(page.locator('textarea')).toHaveCount(0)
+    // No override textarea (IntegrityOverride renders a textarea for the reason). The FP-2
+    // orchestrator chat composer is also a textarea but is NOT an override control, so it is
+    // excluded by testid.
+    await expect(page.locator('textarea:not([data-testid="chat-input"])')).toHaveCount(0)
   })
 
   // ── Stage 4.5 FAIL (SUSPECTED) ────────────────────────────────────────────
@@ -70,8 +72,8 @@ test.describe('P19.2 — Blocking gate enforcement', () => {
 
     // No acknowledge checkbox (like the 2.5 PASS_WITH_CONDITIONS checkbox).
     await expect(page.locator('[role="checkbox"]')).toHaveCount(0)
-    // No override textarea.
-    await expect(page.locator('textarea')).toHaveCount(0)
+    // No override textarea (excluding the FP-2 orchestrator chat composer, which is not one).
+    await expect(page.locator('textarea:not([data-testid="chat-input"])')).toHaveCount(0)
     // No skip button (text-based check for any "skip" affordance).
     await expect(page.locator('button:has-text("skip"), button:has-text("Skip"), button:has-text("bypass")')).toHaveCount(0)
   })

@@ -93,9 +93,10 @@ test.describe('P19.8 — Adversarial bypass audit (iron rules)', () => {
     await page.goto('/pipeline/final-integrity')
 
     await expect(page.locator('[data-testid="rerun-final-integrity"]')).toBeVisible({ timeout: 10_000 })
-    // Confirm zero bypass affordances.
+    // Confirm zero bypass affordances. The FP-2 orchestrator chat composer is a textarea but
+    // is not a gate-override control, so it is excluded by testid.
     await expect(page.locator('[role="checkbox"]')).toHaveCount(0)
-    await expect(page.locator('textarea')).toHaveCount(0)
+    await expect(page.locator('textarea:not([data-testid="chat-input"])')).toHaveCount(0)
     await expect(page.locator('[data-testid="export-button"]')).toHaveCount(0)
   })
 

@@ -23,7 +23,6 @@ import {
   deriveCheckpointIndex,
   isRunningStatus,
   revertRunningStatus,
-  pipelineStatusLabel,
 } from '@/lib/pipeline-router'
 import { PipelineSidebar } from '@/components/pipeline/PipelineSidebar'
 import { AgentChatPanel } from '@/components/pipeline/AgentChatPanel'
@@ -76,28 +75,19 @@ export default function PipelineLayout({ children }: { children: React.ReactNode
     return <>{children}</>
   }
 
+  // FP-2 — the 3-pane "Agent Studio": progress tracker | stage/paper | orchestrator chat.
+  // On lg+ the chat is a persistent docked column (the AgentChatPanel renders it as an
+  // <aside>); below lg it self-collapses to a floating panel, so the centre pane gets the
+  // full width on smaller screens (P19.7 responsive discipline).
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-6 px-4 py-6 lg:flex-row">
-      <aside className="hidden sm:block lg:w-64 lg:shrink-0">
+    <div className="mx-auto flex max-w-[100rem] flex-col gap-6 px-4 py-6 lg:flex-row">
+      <aside className="hidden sm:block lg:w-60 lg:shrink-0">
         <div className="lg:sticky lg:top-6">
           <PipelineSidebar paper={paper} />
         </div>
       </aside>
       <div className="min-w-0 flex-1">{children}</div>
-      <AgentChatPanel
-        paperId={paper.id ?? 'default'}
-        context={{
-          topic: paper.config?.topic,
-          paperType: paper.config?.paperType,
-          outline: paper.outline,
-          completedSections: paper.sections
-            ?.filter((s) => s.status === 'done' || s.status === 'edited')
-            .map((s) => `## ${s.heading}\n${s.content}`),
-          currentStage: paper.pipelineStatus
-            ? pipelineStatusLabel(paper.pipelineStatus)
-            : undefined,
-        }}
-      />
+      <AgentChatPanel paperId={paper.id ?? 'default'} paper={paper} />
     </div>
   )
 }

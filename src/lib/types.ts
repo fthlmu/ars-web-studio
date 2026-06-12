@@ -712,11 +712,36 @@ export interface ReviewResult {
 
 export interface ChatMessage {
   id: string
-  role: 'user' | 'assistant'
+  // FP-2: 'narrator' = a LOCAL (no-LLM) orchestrator announcement or Decision-Dashboard
+  // checkpoint card. Narrator messages are UI-only and are filtered out of the /api/chat
+  // request so they never enter the model's context.
+  role: 'user' | 'assistant' | 'narrator'
   content: string
   timestamp: string
   /** Which pipeline stage this message was sent from */
   stage?: string
+  /** FP-2 — structured Decision-Dashboard data, present ONLY on the single decision-point
+   *  card for a checkpoint. Plain narrator announcements ("Stage X starting") omit it. */
+  checkpoint?: ChatCheckpoint
+}
+
+// FP-2 — a navigation action on a narrator checkpoint card. The href always points at the
+// /pipeline/* route that OWNS the real, guarded control (Accept / Revise / Reject). The chat
+// NEVER performs a gate decision itself — it only takes the user to the page that enforces
+// it — so a narrator card can never bypass a blocking gate (the FP-2 iron-rule guarantee).
+export interface ChatCheckpointAction {
+  label: string
+  href: string
+  testid: string
+  variant?: 'default' | 'outline' | 'secondary'
+}
+
+export interface ChatCheckpoint {
+  /** 'CP-01' … 'CP-12' (the sidebar checkpoint this card represents) */
+  checkpointId: string
+  /** A BLOCKING gate (2.5 / 3 / 3' / 4.5 / 5) — buttons only, no auto-continue. */
+  blocking?: boolean
+  actions: ChatCheckpointAction[]
 }
 
 export interface ChatThread {
