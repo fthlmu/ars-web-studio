@@ -15,8 +15,9 @@ import { marked } from 'marked'
 import 'katex/dist/katex.min.css'
 
 import { Toolbar } from './Toolbar'
+import { MaterialGapHighlight } from '@/lib/editor/material-gap-mark'
 import { Button } from '@/components/ui/button'
-import { generateSection, getSectionWordCount, stripHtml } from '@/lib/ars-client'
+import { writeSection, PaperContentError, getSectionWordCount, stripHtml } from '@/lib/ars-client'
 import type { PaperConfig, Section } from '@/lib/types'
 
 interface Props {
@@ -25,6 +26,9 @@ interface Props {
   outline: string
   completedSections: Section[]   // all other sections (for context when regenerating)
   onSave: (sectionId: string, html: string, wordCount: number) => void
+  // P18.9: when true, the Material Passport is STALE — an edit happened after a 2.5 PASS,
+  // so the integrity check must be re-run before peer review (FR-49). Render-only banner.
+  isStale?: boolean
 }
 
 // ─── Markdown → HTML conversion ───────────────────────────────────────────────
@@ -109,6 +113,7 @@ export function SectionEditor({
   outline,
   completedSections,
   onSave,
+  isStale = false,
 }: Props) {
   const [showMathDialog, setShowMathDialog] = useState(false)
   const [isRegenerating, setIsRegenerating] = useState(false)
@@ -138,6 +143,7 @@ export function SectionEditor({
       Mathematics.configure({
         katexOptions: { throwOnError: false },
       }),   // enables $...$ (inline) and $$...$$ (display) math via KaTeX
+      MaterialGapHighlight,   // render-only yellow highlight on [MATERIAL GAP ...] tags (FR-13/FR-14)
     ],
     content: toHtml(section.content),
     editorProps: {
@@ -209,7 +215,9 @@ export function SectionEditor({
 
     let accumulated = ''
     try {
-      const content = await generateSection(
+      // FP-1: regenerate goes through the extract → sanitize → validate channel too, so a
+      // regenerated section is exactly as clean as a first-pass one (no metadata/marker leak).
+      const result = await writeSection(
         config,
         outline,
         completedSections.filter((s) => s.id !== section.id),
@@ -225,7 +233,7 @@ export function SectionEditor({
           )
         }
       )
-      const html = toHtml(content)
+      const html = toHtml(result.content)
       editor.commands.setContent(html, { emitUpdate: false })
       migrateMathStrings(editor)
       const finalHtml = editor.getHTML()
@@ -237,7 +245,10 @@ export function SectionEditor({
       if (previousContent) {
         editor.commands.setContent(previousContent, { emitUpdate: false })
       }
-      alert(`Regeneration failed: ${err instanceof Error ? err.message : String(err)}`)
+      const reason = err instanceof PaperContentError
+        ? `the model returned non-paper content (${err.reason})`
+        : err instanceof Error ? err.message : String(err)
+      alert(`Regeneration failed: ${reason}`)
     } finally {
       setIsRegenerating(false)
       setRegenStream('')
@@ -258,6 +269,18 @@ export function SectionEditor({
 
   return (
     <div className="flex flex-col h-full border rounded-lg overflow-hidden bg-background">
+
+      {/* P18.9 — STALE banner: editing after a 2.5 PASS invalidated the integrity check. */}
+      {isStale && (
+        <div
+          data-testid="stale-banner"
+          role="status"
+          aria-live="polite"
+          className="border-b border-red-300 bg-red-50 px-4 py-2 text-xs text-red-800 dark:bg-red-950/30 dark:text-red-300"
+        >
+          ⚠ Content changed after the integrity PASS — re-run the integrity check before peer review.
+        </div>
+      )}
 
       {/* Toolbar */}
       <Toolbar

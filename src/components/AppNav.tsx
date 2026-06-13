@@ -8,6 +8,7 @@ const STEPS = [
   { href: '/pipeline', label: 'Pipeline' },
   { href: '/editor', label: 'Editor' },
   { href: '/export', label: 'Export' },
+  { href: '/tools', label: 'Tools' },
 ]
 
 function isActive(pathname: string, href: string): boolean {
