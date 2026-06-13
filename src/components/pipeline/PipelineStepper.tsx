@@ -11,6 +11,8 @@ export interface PipelineStage {
   status: StageStatus
   wordCount?: number   // shown when done
   error?: string       // shown when error
+  activeLabel?: string // overrides "writing…" badge for human-gate stages
+  hint?: string        // italic subtext shown below label when active — explains required action
 }
 
 interface Props {
@@ -45,27 +47,34 @@ export function PipelineStepper({ stages }: Props) {
       {stages.map((stage) => (
         <div
           key={stage.id}
-          className={`flex items-center gap-3 rounded-md border px-4 py-2.5 transition-colors ${BG[stage.status]}`}
+          className={`flex items-start gap-3 rounded-md border px-4 py-2.5 transition-colors ${BG[stage.status]}`}
         >
           {/* Status icon */}
           <span className={`text-base shrink-0 ${COLORS[stage.status]}`}>
             {ICONS[stage.status]}
           </span>
 
-          {/* Stage label */}
-          <span
-            className={`flex-1 text-sm font-medium ${
-              stage.status === 'pending'
-                ? 'text-muted-foreground'
-                : 'text-foreground'
-            }`}
-          >
-            {stage.label}
-          </span>
+          {/* Stage label + optional hint */}
+          <div className="flex-1 min-w-0">
+            <p
+              className={`text-sm font-medium ${
+                stage.status === 'pending'
+                  ? 'text-muted-foreground'
+                  : 'text-foreground'
+              }`}
+            >
+              {stage.label}
+            </p>
+            {stage.status === 'active' && stage.hint && (
+              <p className="text-xs text-muted-foreground italic mt-0.5">{stage.hint}</p>
+            )}
+          </div>
 
           {/* Right-side info */}
           {stage.status === 'active' && (
-            <span className="text-xs text-blue-500 animate-pulse">writing…</span>
+            <span className="text-xs text-blue-500 animate-pulse">
+              {stage.activeLabel ?? 'writing…'}
+            </span>
           )}
           {stage.status === 'done' && stage.wordCount !== undefined && (
             <span className="text-xs text-muted-foreground tabular-nums">

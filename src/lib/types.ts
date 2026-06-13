@@ -40,6 +40,13 @@ export interface Section {
   status: 'pending' | 'generating' | 'done' | 'edited'
 }
 
+// FP-1 (B4): one section as declared by the structure architect's machine-readable JSON
+// block. The paper's section list is derived from these, not from regex over outline text.
+export interface OutlineSection {
+  heading: string
+  targetWords: number
+}
+
 // The full paper state saved to localStorage.
 // This is the single source of truth for the entire app session.
 export interface PaperState {
@@ -47,6 +54,10 @@ export interface PaperState {
   config: PaperConfig
   outline: string                   // raw outline text from structure_architect agent
   outlineApproved: boolean
+  // FP-1 (B4): the architect's section list (headings + word allocations). Paper structure
+  // is derived from this rather than from regex over the outline text. Optional for DR-01
+  // back-compat — a paper saved before FP-1 simply has none and falls back to defaults.
+  outlineSections?: OutlineSection[]
   sections: Section[]
   generationStatus: 'idle' | 'running' | 'done' | 'error'
   createdAt: string                 // ISO date string

@@ -79,8 +79,8 @@ function getErrorMessage(err: unknown): string {
 }
 
 function normalizeMaxTokens(value: unknown): number {
-  if (!Number.isInteger(value)) return 8096
-  return Math.min(Math.max(value as number, 1), 32000)
+  if (!Number.isInteger(value)) return 16000
+  return Math.min(Math.max(value as number, 1), 64000)
 }
 
 function isLocalBaseUrl(baseURL: string): boolean {
@@ -231,22 +231,53 @@ export async function POST(req: NextRequest) {
               apiKey: process.env.ANTHROPIC_API_KEY,
             })
 
+            // When the user set an effort level (e.g. "high", "xhigh"), we pass it to
+            // the API as output_config.effort AND enable adaptive thinking so Claude
+            // streams its reasoning before the answer. The "display: summarized" option
+            // means we get the thinking text back in the stream (instead of it being
+            // hidden), so we can forward it to the browser as {thinking: ...} frames.
+            // Only supported on Sonnet 4.6+ and Opus 4.7+; ignored by older models.
+            const effortConfig = config.effort
+              ? {
+                  output_config: { effort: config.effort },
+                  thinking: { type: 'adaptive' as const, display: 'summarized' as const },
+                }
+              : {}
+
             // Open a streaming connection to the Claude API inside the response stream.
             // If setup fails, the browser still receives a normal SSE error frame.
-            const stream = await anthropic.messages.stream({
+            const stream = anthropic.messages.stream({
               model: config.model,
               max_tokens: maxTokens,
               system: agentPrompt,
               messages: [{ role: 'user', content: userMessage }],
+              ...effortConfig,
             })
 
             for await (const chunk of stream) {
-              if (
-                chunk.type === 'content_block_delta' &&
-                chunk.delta.type === 'text_delta'
-              ) {
-                send({ text: chunk.delta.text })
+              if (chunk.type === 'content_block_delta') {
+                if (chunk.delta.type === 'text_delta') {
+                  send({ text: chunk.delta.text })
+                } else if (chunk.delta.type === 'thinking_delta') {
+                  // Claude is showing its reasoning process. Send it as a separate
+                  // frame so the browser can display "Thinking..." without mixing it
+                  // into the actual paper text.
+                  send({ thinking: chunk.delta.thinking })
+                }
               }
+            }
+
+            // After streaming ends, check WHY Claude stopped. Two new stop reasons
+            // (beyond the normal "end_turn") need a clear error message:
+            //   'refusal'                    — safety filter triggered
+            //   'model_context_window_exceeded' — paper too long for Claude's memory
+            // Without this check, the browser just sees an empty response and hangs.
+            const finalMsg = await stream.finalMessage()
+            const stopReason = finalMsg.stop_reason as string
+            if (stopReason === 'refusal') {
+              send({ error: 'Claude refused this request (safety filter). Try rephrasing the paper topic or instructions.' })
+            } else if (stopReason === 'model_context_window_exceeded') {
+              send({ error: 'The paper is too long for Claude to process in one step. Try reducing the target word count.' })
             }
           }
 

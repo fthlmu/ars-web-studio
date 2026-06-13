@@ -8,7 +8,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:unit": "playwright test -c playwright.unit.config.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.98.0",

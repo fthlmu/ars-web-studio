@@ -21,17 +21,31 @@ import { SectionReviewGate } from '@/components/pipeline/SectionReviewGate'
 import { AgentProgressPanel } from '@/components/pipeline/AgentProgressPanel'
 import { OutlineAccordion } from '@/components/pipeline/OutlineAccordion'
 import { loadPaper, savePaper, loadModelConfig } from '@/lib/storage'
-import { generateOutline, generateSection, getSectionWordCount } from '@/lib/ars-client'
+import { writeOutline, writeSection, getSectionWordCount, PaperContentError } from '@/lib/ars-client'
 import { consumePendingInstructions, loadChatThread, saveChatThread } from '@/lib/chat-persistence'
-import { stripAgentNotes } from '@/lib/strip-agent-notes'
 import type { PaperState, Section, ModelConfig } from '@/lib/types'
 
 // ─── Section heading parser ───────────────────────────────────────────────────
 
+// Paper-type default section headings — used as the surfaced fallback (FP-1 B4) when the
+// architect omits the structured section JSON, and by parseSectionHeadings below.
+const DEFAULT_HEADINGS: Record<string, string[]> = {
+  imrad:        ['Introduction', 'Literature Review', 'Methodology', 'Results', 'Discussion', 'Conclusion'],
+  lit_review:   ['Introduction', 'Search Strategy', 'Thematic Synthesis', 'Gaps and Future Work', 'Conclusion'],
+  theoretical:  ['Introduction', 'Background', 'Theoretical Framework', 'Propositions', 'Implications', 'Conclusion'],
+  case_study:   ['Introduction', 'Case Background', 'Analysis', 'Findings', 'Discussion', 'Conclusion'],
+  policy_brief: ['Executive Summary', 'Problem Statement', 'Evidence Review', 'Options Analysis', 'Recommendations'],
+  conference:   ['Introduction', 'Related Work', 'Methodology', 'Results', 'Conclusion'],
+}
+
+function defaultHeadings(paperType: string): string[] {
+  return DEFAULT_HEADINGS[paperType] ?? ['Introduction', 'Body', 'Conclusion']
+}
+
 /**
- * Extracts section headings from the outline text.
- * Looks for markdown ## headings, numbered or plain.
- * Falls back to paper-type defaults if parsing yields too few results.
+ * Back-compat heading parser for papers generated BEFORE FP-1 (no outlineSections).
+ * Looks for markdown ## headings, numbered or plain; falls back to paper-type defaults.
+ * New papers derive their section list from the architect's structured JSON instead (B4).
  */
 function parseSectionHeadings(outlineText: string, paperType: string): string[] {
   const lines = outlineText.split('\n')
@@ -52,16 +66,50 @@ function parseSectionHeadings(outlineText: string, paperType: string): string[] 
 
   if (headings.length >= 3) return headings
 
-  // Fallback: use the paper type's default sections
-  const DEFAULTS: Record<string, string[]> = {
-    imrad:        ['Introduction', 'Literature Review', 'Methodology', 'Results', 'Discussion', 'Conclusion'],
-    lit_review:   ['Introduction', 'Search Strategy', 'Thematic Synthesis', 'Gaps and Future Work', 'Conclusion'],
-    theoretical:  ['Introduction', 'Background', 'Theoretical Framework', 'Propositions', 'Implications', 'Conclusion'],
-    case_study:   ['Introduction', 'Case Background', 'Analysis', 'Findings', 'Discussion', 'Conclusion'],
-    policy_brief: ['Executive Summary', 'Problem Statement', 'Evidence Review', 'Options Analysis', 'Recommendations'],
-    conference:   ['Introduction', 'Related Work', 'Methodology', 'Results', 'Conclusion'],
+  return defaultHeadings(paperType)
+}
+
+/**
+ * Append assistant chat messages for the chatter (notes) and citation slugs the
+ * paper-extract channel pulled out of a deliverable. This is the conversation channel:
+ * the paper window only ever gets clean prose.
+ */
+function postAgentNotes(
+  paperId: string,
+  stage: string,
+  label: string,
+  notes: string[],
+  citations: string[],
+): void {
+  if (notes.length === 0 && citations.length === 0) return
+  const thread = loadChatThread(paperId)
+  const stamp = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  for (const note of notes) {
+    thread.messages.push({
+      id: stamp(),
+      role: 'assistant',
+      content: `📝 ${label}: ${note}`,
+      timestamp: new Date().toISOString(),
+      stage,
+    })
   }
-  return DEFAULTS[paperType] ?? ['Introduction', 'Body', 'Conclusion']
+  if (citations.length > 0) {
+    thread.messages.push({
+      id: stamp(),
+      role: 'assistant',
+      content: `🔖 ${label} — citations referenced: ${citations.join(', ')}`,
+      timestamp: new Date().toISOString(),
+      stage,
+    })
+  }
+  saveChatThread(paperId, thread)
+}
+
+/** Target words for a section: the architect's allocation if present, else the heuristic. */
+function targetWordsFor(state: PaperState, heading: string): number {
+  const declared = state.outlineSections?.find((o) => o.heading === heading)?.targetWords
+  if (declared && declared > 0) return declared
+  return getSectionWordCount(state.config.wordCount, state.config.paperType, heading)
 }
 
 /** Count words in a plain-text string */
@@ -195,35 +243,29 @@ export default function WritePage() {
     setStreamingText('')
     setActiveSection('outline')
 
-    let accumulatedOutline = ''
     try {
-      accumulatedOutline = await generateOutline(state.config, (chunk) => {
-        accumulatedOutline += chunk
-        setStreamingText((prev) => prev + chunk)
-      }, modelConfigRef.current)
+      // FP-1: the raw stream feeds the live preview; persistence goes through the
+      // extract → sanitize → validate channel. writeOutline returns clean outline text
+      // plus the architect's structured section list (B4) and any chatter/citations.
+      const result = await writeOutline(
+        state.config,
+        (chunk) => setStreamingText((prev) => prev + chunk),
+        defaultHeadings(state.config.paperType),
+        modelConfigRef.current,
+      )
 
-      // P20: strip agent notes from the outline; redirect to chat panel
-      const { content: cleanOutline, notes: outlineNotes } = stripAgentNotes(accumulatedOutline)
-      accumulatedOutline = cleanOutline
-      if (outlineNotes.length > 0) {
-        const paperId = paperRef.current?.id ?? 'default'
-        const thread = loadChatThread(paperId)
-        for (const note of outlineNotes) {
-          thread.messages.push({
-            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-            role: 'assistant',
-            content: `📝 Agent note (Outline): ${note}`,
-            timestamp: new Date().toISOString(),
-            stage: 'write',
-          })
-        }
-        saveChatThread(paperId, thread)
+      const paperId = paperRef.current?.id ?? 'default'
+      postAgentNotes(paperId, 'write', 'Outline', result.notes, result.citations)
+      if (result.usedFallback) {
+        postAgentNotes(paperId, 'write', 'Outline', [
+          'The structured section list was missing from the outline, so the default sections for this paper type were used. Review and edit the outline before approving.',
+        ], [])
       }
 
-      outlineRef.current = accumulatedOutline
-      setOutlineText(accumulatedOutline)
+      outlineRef.current = result.outline
+      setOutlineText(result.outline)
 
-      persist((prev) => ({ ...prev, outline: accumulatedOutline }))
+      persist((prev) => ({ ...prev, outline: result.outline, outlineSections: result.sections }))
 
       updatePhase('outline', 'done')
       updatePhase('approval', 'active')
@@ -245,8 +287,13 @@ export default function WritePage() {
   function handleApproveOutline() {
     if (!paper) return
 
-    // Use the (possibly edited) outlineText to derive sections
-    const headings = parseSectionHeadings(outlineRef.current, paper.config.paperType)
+    // FP-1 (B4): derive the section list from the architect's structured JSON, not from
+    // regex over the outline text. Fall back to heading parsing only for papers generated
+    // before FP-1 (which have no outlineSections).
+    const declared = paperRef.current?.outlineSections
+    const headings = declared && declared.length > 0
+      ? declared.map((d) => d.heading)
+      : parseSectionHeadings(outlineRef.current, paper.config.paperType)
 
     // Build Section objects — one per heading
     const sections: Section[] = headings.map((heading, i) => ({
@@ -301,53 +348,37 @@ export default function WritePage() {
       setActiveSection(section.heading)
       setStreamingText('')
 
-      const targetWords = getSectionWordCount(
-        state.config.wordCount,
-        state.config.paperType,
-        section.heading
-      )
+      const targetWords = targetWordsFor(state, section.heading)
 
-      let content = ''
       try {
         // P20: consume any pending instructions from the chat panel
         const userInstructions = consumePendingInstructions(paperRef.current?.id ?? 'default')
 
-        content = await generateSection(
+        // FP-1: the raw stream feeds the live preview only; what we persist comes back
+        // already extracted, sanitized, and validated (with one auto-retry inside).
+        const result = await writeSection(
           state.config,
           outline,
           completedSectionsRef.current,
           section.heading,
           targetWords,
-          (chunk) => {
-            content += chunk
-            setStreamingText((prev) => prev + chunk)
-          },
+          (chunk) => setStreamingText((prev) => prev + chunk),
           modelConfigRef.current,
           userInstructions.length > 0 ? userInstructions : undefined
         )
 
-        // P20: strip agent notes from the generated content; redirect to chat panel
-        const { content: cleanContent, notes } = stripAgentNotes(content)
-        content = cleanContent
-        if (notes.length > 0) {
-          const paperId = paperRef.current?.id ?? 'default'
-          const thread = loadChatThread(paperId)
-          for (const note of notes) {
-            thread.messages.push({
-              id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-              role: 'assistant',
-              content: `📝 Agent note (${section.heading}): ${note}`,
-              timestamp: new Date().toISOString(),
-              stage: 'write',
-            })
-          }
-          saveChatThread(paperId, thread)
-        }
+        postAgentNotes(
+          paperRef.current?.id ?? 'default',
+          'write',
+          section.heading,
+          result.notes,
+          result.citations,
+        )
 
         const completed: Section = {
           ...section,
-          content,
-          wordCount: countWords(content),
+          content: result.content,
+          wordCount: countWords(result.content),
           status: 'done',
         }
 
@@ -368,7 +399,10 @@ export default function WritePage() {
           return next
         })
       } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err)
+        // FP-1: a PaperContentError means we got chatter/refusal twice — never persist it.
+        const msg = err instanceof PaperContentError
+          ? `The model did not return clean section content (${err.reason}). Nothing was saved for this section — retry it.`
+          : err instanceof Error ? err.message : String(err)
         updatePhase(phaseId, 'error', { error: msg })
         setSectionErrors((prev) => ({ ...prev, [section.heading]: msg }))
         // Don't abort — continue to next section; user can retry the failed one
@@ -455,31 +489,33 @@ export default function WritePage() {
     setActiveSection(section.heading)
     setStreamingText('')
 
-    const targetWords = getSectionWordCount(
-      paper.config.wordCount,
-      paper.config.paperType,
-      section.heading
-    )
+    const targetWords = targetWordsFor(paper, section.heading)
 
-    let content = ''
     try {
-      content = await generateSection(
+      // FP-1 (B3 fix): a retried section now goes through the SAME extract → sanitize →
+      // validate channel as the first pass — it no longer keeps raw pollution.
+      const result = await writeSection(
         paper.config,
         outlineRef.current,
         completedSectionsRef.current,
         section.heading,
         targetWords,
-        (chunk) => {
-          content += chunk
-          setStreamingText((prev) => prev + chunk)
-        },
+        (chunk) => setStreamingText((prev) => prev + chunk),
         modelConfigRef.current
+      )
+
+      postAgentNotes(
+        paperRef.current?.id ?? 'default',
+        'write',
+        section.heading,
+        result.notes,
+        result.citations,
       )
 
       const completed: Section = {
         ...section,
-        content,
-        wordCount: countWords(content),
+        content: result.content,
+        wordCount: countWords(result.content),
         status: 'done',
       }
 
@@ -497,7 +533,9 @@ export default function WritePage() {
         return next
       })
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
+      const msg = err instanceof PaperContentError
+        ? `The model did not return clean section content (${err.reason}). Nothing was saved for this section — retry it.`
+        : err instanceof Error ? err.message : String(err)
       updatePhase(`section-${section.id}`, 'error', { error: msg })
       setSectionErrors((prev) => ({ ...prev, [section.heading]: msg }))
     } finally {

@@ -10,8 +10,11 @@
 //   generateAbstract() → abstract_bilingual_agent
 
 import {
-  STRUCTURE_ARCHITECT_PROMPT,
-  DRAFT_WRITER_PROMPT,
+  // FP-1: paper drafting/outline now use the web-adapted prompts that emit clean-prose-only
+  // deliverables. The original DRAFT_WRITER_PROMPT / STRUCTURE_ARCHITECT_PROMPT are kept
+  // untouched in their own files (and still exported from ./ars-agents) for reference.
+  STRUCTURE_ARCHITECT_WEB_PROMPT,
+  DRAFT_WRITER_WEB_PROMPT,
   CITATION_COMPLIANCE_PROMPT,
   ABSTRACT_BILINGUAL_PROMPT,
   // P10 Stage 2.5: the integrity-gate agent prompt (reused at Stage 4.5 in P15).
@@ -101,6 +104,14 @@ import type {
   AISelfReflection,
   CollaborationDepth,
 } from './types'
+// FP-1: the paper-artifact channel. Raw replies go through extract → sanitize → validate
+// before anything is persisted as paper content; chatter/citations are routed out.
+import {
+  extractSection,
+  extractOutline,
+  extractAbstract,
+  type OutlineSection,
+} from './paper-extract'
 
 // ─── Core streaming primitive ────────────────────────────────────────────────
 
@@ -218,9 +229,45 @@ export async function callAgent(
 
 // ─── Pipeline stage 1: Generate outline ─────────────────────────────────────
 
+// ─── FP-1 paper output contracts ─────────────────────────────────────────────
+//
+// Mirror the P9 CONTRACT_* pattern: a strict instruction appended to the user message that
+// tells the model to wrap the paper deliverable in explicit delimiters. Everything outside
+// the delimiters is commentary, which paper-extract routes to the conversation channel.
+
+const CONTRACT_PAPER_OUTLINE = `PAPER OUTPUT CONTRACT (required):
+1) Output the human-readable outline wrapped EXACTLY between these two lines (each alone on its own line):
+<<<PAPER_OUTLINE>>>
+...outline markdown...
+<<<END_PAPER_OUTLINE>>>
+2) AFTER the outline block, output exactly ONE fenced \`\`\`json block with the section list the app parses:
+{ "sections": [ { "heading": string, "targetWords": number } ] }
+- headings must match the outline's section titles, in order; targetWords are positive integers summing to about the target word count.
+- No commentary inside the json block. No metadata/score tables, manifests, HTML comments, or file/phase references anywhere.`
+
+function contractPaperSection(heading: string): string {
+  return `PAPER OUTPUT CONTRACT (required):
+Return ONLY the finished section as clean academic markdown, wrapped EXACTLY between these two lines (each alone on its own line):
+<<<PAPER_SECTION>>>
+## ${heading}
+...the section's prose...
+<<<END_PAPER_SECTION>>>
+- The first line inside the delimiters MUST be the heading "## ${heading}".
+- Inside the delimiters put ONLY the section's prose and sub-headings. Any commentary goes OUTSIDE the delimiters.
+- Do NOT emit metadata/word-count tables, dimension scores, manifests, HTML comments, ref/anchor markers, preamble, or sign-offs — only readable prose with inline citations like [Author, Year] or [1].`
+}
+
+const CONTRACT_PAPER_ABSTRACT = `PAPER OUTPUT CONTRACT (required):
+Wrap ONLY the abstract(s) and keywords as clean markdown EXACTLY between these two lines (each alone on its own line):
+<<<PAPER_ABSTRACT>>>
+...abstract markdown...
+<<<END_PAPER_ABSTRACT>>>
+Put any quality report or commentary OUTSIDE the delimiters. No metadata tables, manifests, HTML comments, or markers inside.`
+
 /**
- * Calls the structure_architect_agent to generate a paper outline.
- * Output is a numbered section list with word count allocations.
+ * Low-level call to the structure architect to generate a paper outline (raw reply).
+ * Uses the FP-1 web-adapted prompt + output contract. Callers should run the result
+ * through extractOutline (or use the higher-level writeOutline wrapper).
  */
 export async function generateOutline(
   config: PaperConfig,
@@ -241,9 +288,11 @@ For each section, specify:
 - 2–3 bullet points describing what the section should cover
 
 Follow the paper structure patterns for ${config.paperType} papers.
+
+${CONTRACT_PAPER_OUTLINE}
 `.trim()
 
-  return callAgent(STRUCTURE_ARCHITECT_PROMPT, userMessage, onChunk, modelConfig)
+  return callAgent(STRUCTURE_ARCHITECT_WEB_PROMPT, userMessage, onChunk, modelConfig)
 }
 
 // ─── Pipeline stage 2: Generate one section ─────────────────────────────────
@@ -300,9 +349,11 @@ Requirements:
 - Every factual claim must include a citation placeholder: [Author, Year] or [1] for IEEE
 - Do NOT write any other section — only "${targetSectionHeading}"
 - Output clean markdown (## for section heading, ### for subsections)
-${instructionBlock}`.trim()
+${instructionBlock}
 
-  return callAgent(DRAFT_WRITER_PROMPT, userMessage, onChunk, modelConfig)
+${contractPaperSection(targetSectionHeading)}`.trim()
+
+  return callAgent(DRAFT_WRITER_WEB_PROMPT, userMessage, onChunk, modelConfig)
 }
 
 // ─── Pipeline stage 3: Citation check ────────────────────────────────────────
@@ -372,9 +423,129 @@ Write:
 2. Abstract in ${secondLanguage} (same structure, independently written — NOT a translation)
 3. Keywords in both languages (5–7 each)
 4. Abstract Quality Report table
+
+${CONTRACT_PAPER_ABSTRACT}
 `.trim()
 
   return callAgent(ABSTRACT_BILINGUAL_PROMPT, userMessage, onChunk, modelConfig)
+}
+
+// ─── FP-1 paper-artifact channel: clean-content wrappers ─────────────────────
+//
+// These wrap the low-level generators above with the extract → sanitize → validate
+// pipeline and a single auto-retry (mirroring the parseSchemaN retry pattern). They are
+// what the UI calls: persistence flows through THESE, never through the raw stream. The
+// raw stream still drives the live preview (via onChunk) in the conversation channel.
+
+/** A cleaned paper deliverable plus the chatter pulled out of it (for the chat channel). */
+export interface CleanPaperResult {
+  content: string
+  notes: string[]
+  citations: string[]
+}
+
+/** Cleaned outline plus the derived section list (B4: structure comes from the JSON). */
+export interface CleanOutlineResult {
+  outline: string
+  sections: OutlineSection[]
+  notes: string[]
+  citations: string[]
+  usedFallback: boolean
+}
+
+/**
+ * Thrown when a paper deliverable fails the validation gate twice (no usable heading, too
+ * short, or a refusal/question). The caller marks the section as `error` and shows the
+ * reason in chat — the bad text is NEVER persisted as paper content.
+ */
+export class PaperContentError extends Error {
+  constructor(public reason: string) {
+    super('PAPER_CONTENT_INVALID: ' + reason)
+    this.name = 'PaperContentError'
+  }
+}
+
+/**
+ * Generate ONE clean paper section. Extracts the delimited block, sanitizes it, validates
+ * it; on failure retries the whole call ONCE; on a second failure throws PaperContentError.
+ */
+export async function writeSection(
+  config: PaperConfig,
+  outline: string,
+  completedSections: Section[],
+  targetSectionHeading: string,
+  targetWordCount: number,
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig,
+  userInstructions?: string[],
+): Promise<CleanPaperResult> {
+  const runOnce = async (): Promise<ReturnType<typeof extractSection>> => {
+    const raw = await generateSection(
+      config, outline, completedSections, targetSectionHeading, targetWordCount,
+      onChunk, modelConfig, userInstructions,
+    )
+    return extractSection(raw, { heading: targetSectionHeading, targetWords: targetWordCount })
+  }
+
+  let result = await runOnce()
+  if (!result.valid) {
+    console.warn(`[writeSection] "${targetSectionHeading}" invalid (${result.reason}); retrying once`)
+    result = await runOnce()
+  }
+  if (!result.valid) {
+    throw new PaperContentError(result.reason ?? 'invalid')
+  }
+  return { content: result.content, notes: result.notes, citations: result.citations }
+}
+
+/**
+ * Generate a clean outline + derived section list. Retries once only if the cleaned outline
+ * came back empty (outlines rarely refuse). `fallbackHeadings` are the paper-type defaults
+ * used (and surfaced via `usedFallback`) when the architect omitted the section JSON.
+ */
+export async function writeOutline(
+  config: PaperConfig,
+  onChunk: (text: string) => void,
+  fallbackHeadings: string[],
+  modelConfig?: ModelConfig,
+): Promise<CleanOutlineResult> {
+  const runOnce = async (): Promise<CleanOutlineResult> => {
+    const raw = await generateOutline(config, onChunk, modelConfig)
+    return extractOutline(raw, { wordCount: config.wordCount, fallbackHeadings })
+  }
+
+  let result = await runOnce()
+  if (result.outline.trim() === '') {
+    console.warn('[writeOutline] empty outline; retrying once')
+    result = await runOnce()
+  }
+  return result
+}
+
+/**
+ * Generate a clean bilingual abstract. Lenient validation (no heading requirement); retries
+ * once on an empty/refusal reply, then throws PaperContentError.
+ */
+export async function writeAbstract(
+  config: PaperConfig,
+  completedSections: Section[],
+  onChunk: (text: string) => void,
+  modelConfig?: ModelConfig,
+): Promise<CleanPaperResult> {
+  const runOnce = async (): Promise<ReturnType<typeof extractAbstract>> => {
+    const raw = await generateAbstract(config, completedSections, onChunk, modelConfig)
+    return extractAbstract(raw)
+  }
+
+  let result = await runOnce()
+  if (!result.valid) {
+    console.warn(`[writeAbstract] invalid (${result.reason}); retrying once`)
+    result = await runOnce()
+  }
+  if (!result.valid) {
+    throw new PaperContentError(result.reason ?? 'invalid')
+  }
+  return { content: result.content, notes: result.notes, citations: result.citations }
 }
 
 // ─── Helper: estimate word count per section ─────────────────────────────────
