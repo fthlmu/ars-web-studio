@@ -34,7 +34,7 @@ interface Props {
 function OldColumn({ section }: { section: DeltaSection }) {
   const parts = diffWords(section.oldContent, section.newContent)
   return (
-    <div className="rounded-md border bg-muted/20 p-3 text-xs leading-relaxed whitespace-pre-wrap">
+    <div className="rounded-md border bg-muted/20 p-3 text-sm leading-relaxed prose prose-sm max-w-none">
       {parts.map((part, i) => {
         if (part.added) return null
         if (part.removed) {
@@ -58,7 +58,7 @@ function OldColumn({ section }: { section: DeltaSection }) {
 function NewColumn({ section }: { section: DeltaSection }) {
   const parts = diffWords(section.oldContent, section.newContent)
   return (
-    <div className="rounded-md border bg-muted/20 p-3 text-xs leading-relaxed whitespace-pre-wrap">
+    <div className="rounded-md border bg-muted/20 p-3 text-sm leading-relaxed prose prose-sm max-w-none">
       {parts.map((part, i) => {
         if (part.removed) return null
         if (part.added) {

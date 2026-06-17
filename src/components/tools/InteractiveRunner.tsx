@@ -251,7 +251,7 @@ function ChatBubble({
         <p className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">
           {isUser ? 'You' : 'Assistant'}
         </p>
-        <div className="text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed font-mono">
+        <div className="text-sm text-foreground/90 leading-relaxed prose prose-sm max-w-none">
           {content || (streaming ? <span className="text-muted-foreground italic">Starting…</span> : null)}
           {streaming && (
             <span className="inline-block w-0.5 h-4 bg-blue-400 ml-0.5 animate-pulse align-middle" />

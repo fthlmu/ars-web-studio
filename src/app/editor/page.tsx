@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button'
 import { loadPaper, savePaper } from '@/lib/storage'
 import { writeAbstract, PaperContentError } from '@/lib/ars-client'
 import { markEditAfterPass, sectionContentForHash, sha256Hex } from '@/lib/passport'
+import { toHtml } from '@/components/editor/RichContentBlock'
 import type { PaperState } from '@/lib/types'
 
 // Dynamic import with ssr:false — prevents ProseMirror DOM errors during SSR
@@ -290,8 +291,17 @@ export default function EditorPage() {
                 </button>
               </div>
             </div>
-            <div className="px-4 py-3 font-mono text-xs whitespace-pre-wrap text-foreground/80">
-              {abstractText || <span className="text-muted-foreground italic">Abstract will appear here…</span>}
+            {/* FP-3: rendered prose — no raw markdown/mono visible for paper content */}
+            <div className="px-4 py-3">
+              {abstractText ? (
+                <div
+                  data-testid="abstract-prose"
+                  className="prose prose-sm max-w-none text-foreground/90"
+                  dangerouslySetInnerHTML={{ __html: toHtml(abstractText) }}
+                />
+              ) : (
+                <span className="text-muted-foreground italic text-sm">Abstract will appear here…</span>
+              )}
             </div>
           </div>
         )}

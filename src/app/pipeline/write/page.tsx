@@ -20,6 +20,7 @@ import { SectionStream } from '@/components/pipeline/SectionStream'
 import { SectionReviewGate } from '@/components/pipeline/SectionReviewGate'
 import { AgentProgressPanel } from '@/components/pipeline/AgentProgressPanel'
 import { OutlineAccordion } from '@/components/pipeline/OutlineAccordion'
+import { LivePaperPane } from '@/components/pipeline/LivePaperPane'
 import { loadPaper, savePaper, loadModelConfig } from '@/lib/storage'
 import { writeOutline, writeSection, getSectionWordCount, PaperContentError } from '@/lib/ars-client'
 import { consumePendingInstructions, loadChatThread, saveChatThread } from '@/lib/chat-persistence'
@@ -571,7 +572,9 @@ export default function WritePage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="flex flex-col gap-6 xl:flex-row">
+      {/* Left column: pipeline controls, outline, streaming */}
+      <div className="min-w-0 flex-1 space-y-8">
 
         {/* Header */}
         <div>
@@ -680,7 +683,7 @@ export default function WritePage() {
             {/* While generating: streaming preview. After done: structured accordion. */}
             {activeSection === 'outline' || !outlineText ? (
               <div
-                className="min-h-[12rem] rounded-md border bg-muted/10 px-4 py-3 font-mono text-sm whitespace-pre-wrap leading-relaxed text-foreground/80 overflow-y-auto"
+                className="min-h-[12rem] rounded-md border bg-muted/10 px-4 py-3 text-sm leading-relaxed text-foreground/80 overflow-y-auto prose prose-sm max-w-none"
                 aria-live="polite"
                 aria-label="Outline being generated"
               >
@@ -785,6 +788,14 @@ export default function WritePage() {
           />
         )}
 
+      </div>
+
+      {/* Right column: live paper preview pane (FP-3) — shows sections as they complete */}
+      {paper.sections.length > 0 && (
+        <aside className="hidden xl:block xl:w-[28rem] xl:shrink-0">
+          <LivePaperPane paper={paper} />
+        </aside>
+      )}
     </div>
   )
 }

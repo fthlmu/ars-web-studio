@@ -276,7 +276,7 @@ export default function ToolRunnerPage() {
               <pre
                 aria-live="polite"
                 aria-label="Converted output"
-                className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed max-h-[60vh] overflow-y-auto font-mono"
+                className="text-sm text-foreground/80 leading-relaxed max-h-[60vh] overflow-y-auto prose prose-sm max-w-none"
               >
                 {streamingText}
               </pre>
@@ -437,7 +437,7 @@ export default function ToolRunnerPage() {
             <div
               aria-live="polite"
               aria-label={`Output: ${mode.label}`}
-              className="text-sm text-foreground/80 whitespace-pre-wrap leading-relaxed max-h-[60vh] overflow-y-auto font-mono"
+              className="text-sm text-foreground/80 leading-relaxed max-h-[60vh] overflow-y-auto prose prose-sm max-w-none"
             >
               {streamingText || <span className="text-muted-foreground italic">Starting…</span>}
               {status === 'active' && (
